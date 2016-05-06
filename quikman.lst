@@ -1,0 +1,1767 @@
+ca65 V2.12.0 - (C) Copyright 1998-2005 Ullrich von Bassewitz
+Main file   : quikman.s
+Current file: quikman.s
+
+000000r 1               ; Quikman for Commodore VIC20
+000000r 1               ; written by Robert Hurst <robert@hurst-ri.us>
+000000r 1               ; using Commodore VICMON (SYS 45056)
+000000r 1               ; original version: Fall 1984
+000000r 1               ;
+000000r 1               ; disassembled: 23-Oct-2008
+000000r 1               ; re-assembled: 27-Oct-2008
+000000r 1               ;
+000000r 1               ; to assemble this source using cc65.org project:
+000000r 1               ;   ca65.exe --cpu 6502 --listing quikman.s
+000000r 1               ;   ld65.exe -C doc/vic20.cfg -o quikman.prg quikman.o
+000000r 1               ;
+000000r 1               ; to run the binary using viceteam.org project:
+000000r 1               ;   xvic -memory none -ntsc -sound -joydev1 2 -autostart quikman.prg
+000000r 1               ;
+000000r 1               ; pertinent VIC20 symbols
+000000r 1               JIFFYH		= $A0
+000000r 1               JIFFYM		= $A1
+000000r 1               JIFFYL		= $A2		; jiffy-clock low byte value
+000000r 1               SCRNPAGE	= $0288		; screen memory page (unexpanded = $1E)
+000000r 1               CTRLCSHIFT	= $028D		; keyboard flag: control/commodore/shift
+000000r 1               CASSBUFF	= $033C		; cassette buffer
+000000r 1               VIC			= $9000		; start of video interface chip registers
+000000r 1               CHROUT		= $FFD2
+000000r 1               GETIN		= $FFE4
+000000r 1               ;
+000000r 1               ; my symbol / memory map
+000000r 1               PPILLTIMER	= $10		; powerpill effectiveness timer
+000000r 1               FRUITTIMER	= $39		; 0 - 242
+000000r 1               FRUITFLAG	= $3A		; zero or non-zero, if fruit has been activated
+000000r 1               PPILLFLAG	= $3B		; just ate a powerpill this turn (0=no)
+000000r 1               CHOMP		= $3C		; pointer into sound effect for fruit and fleeing monsters
+000000r 1               CHEWING		= $3D		; flag whether quikman just ate a dot or not
+000000r 1               DIGIT		= $3E		; award points at this digit place
+000000r 1               POINTS		= $3F		; how many points scored
+000000r 1               OLDDIR		= $40		; direction sprite was last moving in
+000000r 1               NEWDIR		= $41		; direction sprite wants to take, if valid by MAZEMOVE
+000000r 1               JOYVAL		= $42		; last joystick read value
+000000r 1               QMANDIR		= $43		; quikman's current direction (0=right,1=down,2=left,3=up)
+000000r 1               LIVES		= $44		; 0 - 3
+000000r 1               MAZE		= $45		; maze color: 3 (cyan) or 6 (blue)
+000000r 1               FLASHPILL	= $46		; powerpill blink counter (0-30)
+000000r 1               BANNERTIMER	= $47		; time for banner to display
+000000r 1               BANNERFLAG	= $48		; 0=author, 1=instructions
+000000r 1               FRUITLEVEL	= $49		; 0 - 12
+000000r 1               DOTS		= $4A		; 0 - 174
+000000r 1               PENALTY		= $4B		; $4B-$4E monsters are free-to-roam flag
+000000r 1               ;			= $4F		; $4F-$52 monsters current direction (0=right,1=down,2=left,3=up)
+000000r 1               ;			= $53		; $53,$55,$57,$59 monster's knowledge of quikman's "X" coord was
+000000r 1               ;			= $54		; $54,$56,$58,$5A monster's knowledge of quikman's "Y" coord was
+000000r 1               ;			= $61		; $61-$64 monster array for its next best move
+000000r 1               ;			= $69		; temporary var
+000000r 1               FLEEINGSCORE= $70		; fleeing monster score: 2, 4, 8, 16
+000000r 1               ;			= $FC		; $FC,$FD is screen cell pointer for sprite's "home" position
+000000r 1               ;			= $FE		; $FE,$FF is color cell pointer for same
+000000r 1               ;
+000000r 1               ; program indirects (my sprite registers)
+000000r 1               SPRITE		= $02A1		; bitmask 0-7 controls sprite on/off
+000000r 1               SPRITEX		= $02A2		; $02A2,A4,A6,A8,AA,AC,AE,B0 each "X" coordinate
+000000r 1               SPRITEY		= $02A3		; $02A3,A5,A7,A9,AB,AD,AF,B1 each "Y" coordinate
+000000r 1               SPRITECLR	= $02B2		; $02B2-$02B9 color
+000000r 1               SPRITEIMG1	= $02BA		; $02BA-$02C1 low-byte of SPRITE image
+000000r 1               SPRITEIMG2	= $02C2		; $02C2-$02C9 hi-byte of SPRITE image
+000000r 1               SPRITELAST	= $02CC		; $02CC-$02DC keep last state of SPRITE registers
+000000r 1               SAVEBACK	= $02DD		; $02DD-$02FC keep what's under the sprite's 2x2 matrix
+000000r 1               ;
+000000r 1               EXTRAQMAN	= $03E0		; bonus quickman flag (0=unused)
+000000r 1               ;
+000000r 1               ; other constants
+000000r 1               FRUITCELL	= $1F1B		; screen cell address of fruit
+000000r 1               FRUITCELLCLR= $971B		; color cell address of fruit
+000000r 1               ;
+000000r 1               ; uses standard VIC20 (unexpanded)
+000000r 1               		.segment "STARTUP"
+000000r 1               ;
+000000r 1               ; starting load address:
+000000r 1               ; LOAD "QUIKMAN.PRG",8,1
+000000r 1  01 10        		.word	$1001
+000002r 1               ;
+000002r 1               ; 0 SYS4110
+000002r 1  0B 10 00 00  BASIC:	.byte	$0B, $10, $00, $00, $9E, $34, $31, $31, $30, $00, $00, $00, $00
+000006r 1  9E 34 31 31  
+00000Ar 1  30 00 00 00  
+00000Fr 1               ;
+00000Fr 1               ; Main entry point into the game
+00000Fr 1               START:
+00000Fr 1  20 rr rr     		JSR REDRAW
+000012r 1               RESTART:
+000012r 1  EA           		NOP
+000013r 1  EA           		NOP
+000014r 1  EA           		NOP
+000015r 1  20 rr rr     		JSR INITVARS
+000018r 1  A9 0E        		LDA #$0E		; black / blue
+00001Ar 1  8D 0F 90     		STA VIC+$0F		; background / border color
+00001Dr 1  A9 08        		LDA #$08		; lock uppercase / graphic set
+00001Fr 1  20 D2 FF     		JSR CHROUT
+000022r 1  A2 FF        		LDX #$FF		; set for $1C00
+000024r 1  8E 05 90     		STX VIC+$05		; use programmable char set
+000027r 1  E8           		INX				; mute
+000028r 1  8E 0E 90     		STX VIC+$0E		; aux color / volume
+00002Br 1  A9 95        		LDA #$80+$15	; set for videoram @ $1E00 with 21-columns
+00002Dr 1  8D 02 90     		STA VIC+$02		; video matrix address + columns
+000030r 1  A9 B0        		LDA #$B0		; $B0 = 10110000 = 24 rows + 8x8 height
+000032r 1  8D 03 90     		STA VIC+$03		; rows / character height
+000035r 1  78           		SEI
+000036r 1  A2 rr        		LDX #<BACKGROUND	;$4D
+000038r 1  A0 rr        		LDY #>BACKGROUND	;$10
+00003Ar 1  8E 14 03     		STX $0314
+00003Dr 1  8C 15 03     		STY $0315
+000040r 1  58           		CLI
+000041r 1  A9 06        		LDA #$06			; blue
+000043r 1  85 45        		STA MAZE
+000045r 1  20 E4 FF     @loop1:	JSR GETIN			; get keyboard
+000048r 1  C9 88        		CMP #$88			; got F7 ?
+00004Ar 1  D0 F9        		BNE @loop1			; try again ...
+00004Cr 1  F0 36        		BEQ RESET			; game starts!
+00004Er 1               ;
+00004Er 1               ;($104D)
+00004Er 1               BACKGROUND:
+00004Er 1  A5 A2        		LDA JIFFYL
+000050r 1  29 07        		AND #$07
+000052r 1  F0 06        		BEQ @skip1
+000054r 1  A5 4A        		LDA DOTS
+000056r 1  C9 AE        		CMP #$AE			; All 174 dots been eaten?
+000058r 1  D0 03        		BNE @skip2
+00005Ar 1  4C rr rr     @skip1:	JMP MAZEPAINT
+00005Dr 1  4C rr rr     @skip2:	JMP EFFECTS			; which will return here (JSR)
+000060r 1               ;
+000060r 1               ;($105F)
+000060r 1               SR105F:
+000060r 1  20 rr rr     		JSR SR1500
+000063r 1  EA           		NOP
+000064r 1  EA           		NOP
+000065r 1  EA           		NOP
+000066r 1  20 rr rr     		JSR SR14A0		; sound effects
+000069r 1  20 rr rr     		JSR GAMEOVER	; a routine in custom character area
+00006Cr 1  4C BF EA     		JMP $EABF		; jump to hardware IRQ
+00006Fr 1               ;
+00006Fr 1               ;($106E)
+00006Fr 1               SR106E:
+00006Fr 1  A9 09        		LDA #$09
+000071r 1  85 3C        		STA CHOMP
+000073r 1  A5 A2        		LDA JIFFYL
+000075r 1  C5 A2        @loop1:	CMP JIFFYL
+000077r 1  F0 FC        		BEQ @loop1		; wait up to a jiffy
+000079r 1  98           		TYA
+00007Ar 1  4A           		LSR
+00007Br 1  AA           		TAX
+00007Cr 1  BD rr rr     		LDA CAGEDATA,X	; load waiting room time
+00007Fr 1  4A           		LSR
+000080r 1  4A           		LSR
+000081r 1  95 4B        		STA PENALTY,X	; monster is waiting
+000083r 1  60           		RTS
+000084r 1               ;
+000084r 1               ; game reset
+000084r 1               RESET:
+000084r 1  A9 FF        		LDA #$FF		; -1 will become 0 at start of "next" level
+000086r 1  85 49        		STA FRUITLEVEL
+000088r 1  A9 03        		LDA #$03		; start with 3-lives
+00008Ar 1  85 44        		STA LIVES
+00008Cr 1  A2 00        		LDX #$00		; reset score
+00008Er 1  A9 B0        @loop1:	LDA #$B0		; each digit to "0"
+000090r 1  9D 06 17     		STA SCORE,X		; into savebuffer
+000093r 1  E8           		INX				; do next digit
+000094r 1  E0 06        		CPX #$06		; all 6 of them
+000096r 1  D0 F6        		BNE @loop1
+000098r 1               ;
+000098r 1               ;($1097)
+000098r 1               RESETSND:
+000098r 1  A9 00        		LDA #$00
+00009Ar 1  AA           		TAX
+00009Br 1  9D 0A 90     @loop1:	STA VIC+$0A,X	; reset sound channels
+00009Er 1  E8           		INX
+00009Fr 1  E0 04        		CPX #$04
+0000A1r 1  D0 F8        		BNE @loop1
+0000A3r 1  8D A1 02     		STA SPRITE		; turn off all sprites
+0000A6r 1  20 rr rr     		JSR SPRITES		; redraw sprites
+0000A9r 1  A9 0F        		LDA #$0F
+0000ABr 1  8D 0E 90     		STA VIC+$0E		; volume mute
+0000AEr 1  20 rr rr     		JSR REDRAW		; refresh screen
+0000B1r 1               ;
+0000B1r 1               ;($10B0)
+0000B1r 1               RESETCHR:
+0000B1r 1  A2 05        		LDX #$05
+0000B3r 1  BD rr rr     @loop1:	LDA QUIKMANCLR-1,X ; reset monsters starting colors
+0000B6r 1  9D B1 02     		STA SPRITECLR-1,X ; into their sprite color registers
+0000B9r 1  CA           		DEX
+0000BAr 1  D0 F7        		BNE @loop1
+0000BCr 1  A9 78        @loop2:	LDA #$78		; reset monsters as chasing
+0000BEr 1  9D BB 02     		STA SPRITEIMG1+1,X		; into their sprite register
+0000C1r 1  A9 1D        		LDA #$1D		; reset monsters character
+0000C3r 1  9D C3 02     		STA $02C3,X		; into their sprite register
+0000C6r 1  E8           		INX
+0000C7r 1  E0 04        		CPX #$04
+0000C9r 1  D0 F1        		BNE @loop2
+0000CBr 1  A6 44        		LDX LIVES		; paint lives remaining
+0000CDr 1  A9 2D        @loop3:	LDA #$2D		; quikman character
+0000CFr 1  9D E2 1F     		STA $1FE2,X		; bottom-left of screen
+0000D2r 1  A9 07        		LDA #$07		; use yellow
+0000D4r 1  9D E2 97     		STA $97E2,X		; and paint it
+0000D7r 1  CA           		DEX
+0000D8r 1  EA           		NOP
+0000D9r 1  EA           		NOP
+0000DAr 1  D0 F1        		BNE @loop3
+0000DCr 1  A4 49        		LDY FRUITLEVEL
+0000DEr 1  C0 0C        @loop4:	CPY #$0C		; are we at the last level (key)?
+0000E0r 1  90 02        		BCC @skip1
+0000E2r 1  A0 0C        		LDY #$0C		; only keys remain
+0000E4r 1  B9 rr rr     @skip1:	LDA FRUIT,Y		; fruit character
+0000E7r 1  9D F1 1F     		STA $1FF1,X		; bottom right of screen
+0000EAr 1  B9 rr rr     		LDA FRUITCLR,Y	; get its color
+0000EDr 1  9D F1 97     		STA $97F1,X		; and paint it
+0000F0r 1  C0 00        		CPY #$00		; did we paint the cherry yet?
+0000F2r 1  F0 0D        		BEQ SR1100		; if so, we're done
+0000F4r 1  E8           		INX
+0000F5r 1  86 FF        		STX $FF
+0000F7r 1  A5 49        		LDA FRUITLEVEL
+0000F9r 1  38           		SEC
+0000FAr 1  E5 FF        		SBC $FF
+0000FCr 1  A8           		TAY
+0000FDr 1  E0 07        		CPX #$07		; no more than 7 fruits to display
+0000FFr 1  D0 DD        		BNE @loop4
+000101r 1               ;
+000101r 1               ;($1100)
+000101r 1               SR1100:
+000101r 1  A2 00        		LDX #$00
+000103r 1  8E A1 02     		STX SPRITE		; turn off all sprites
+000106r 1  86 43        		STX QMANDIR		; start off going RIGHT
+000108r 1  86 42        		STX JOYVAL		; preload last joystick value as going RIGHT
+00010Ar 1  20 rr rr     		JSR SPRITES		; redraw sprites
+00010Dr 1  A2 00        		LDX #$00
+00010Fr 1  BD rr rr     @loop1:	LDA STARTPOS,X	; reset each sprite starting position
+000112r 1  9D A2 02     		STA SPRITE+1,X
+000115r 1  E8           		INX
+000116r 1  E0 0A        		CPX #$0A		; 5 sprites per X,Y coordinate pair
+000118r 1  D0 F5        		BNE @loop1
+00011Ar 1  A9 1C        		LDA #$1C		; always point quikman sprite image
+00011Cr 1  8D C2 02     		STA SPRITEIMG2	; to $1CE8 ... stupid?
+00011Fr 1  A9 E8        		LDA #$E8
+000121r 1  8D BA 02     		STA SPRITEIMG1
+000124r 1  A9 1F        		LDA #$1F		; turn on sprites 0-4
+000126r 1  8D A1 02     		STA SPRITE
+000129r 1  20 rr rr     		JSR SPRITES		; redraw sprites
+00012Cr 1  A2 00        		LDX #$00
+00012Er 1  BD 78 C3     @loop2:	LDA $C378,X		; print READY from ROM
+000131r 1  29 BF        		AND #$BF
+000133r 1  09 80        		ORA #$80
+000135r 1  9D 19 1F     		STA $1F19,X
+000138r 1  A9 07        		LDA #$07		; make it yellow
+00013Ar 1  9D 19 97     		STA $9719,X
+00013Dr 1  E8           		INX
+00013Er 1  E0 05        		CPX #$05
+000140r 1  D0 EC        		BNE @loop2		; how geeky is that?
+000142r 1  A5 A2        		LDA JIFFYL
+000144r 1  85 FF        		STA $FF			; save this jiffy
+000146r 1  A5 A2        @loop3:	LDA JIFFYL
+000148r 1  38           		SEC
+000149r 1  E5 FF        		SBC $FF
+00014Br 1  C9 80        		CMP #$80		; wait 2+ seconds
+00014Dr 1  D0 F7        		BNE @loop3
+00014Fr 1  A2 00        		LDX #$00
+000151r 1  A9 20        		LDA #$20		; erase READY
+000153r 1  9D 19 1F     @loop4:	STA $1F19,X
+000156r 1  E8           		INX
+000157r 1  E0 05        		CPX #$05
+000159r 1  D0 F8        		BNE @loop4
+00015Br 1               ;
+00015Br 1               ; we're ready to play now!
+00015Br 1  20 rr rr     		JSR ZEROVARS
+00015Er 1  EA           		NOP
+00015Fr 1  EA           		NOP
+000160r 1  EA           		NOP
+000161r 1               ;
+000161r 1               ;($1160)
+000161r 1               PLAYLOOP:
+000161r 1  A9 00        		LDA #$00
+000163r 1  85 00        		STA $00
+000165r 1  85 01        		STA $01
+000167r 1  A5 43        		LDA QMANDIR
+000169r 1  85 40        		STA OLDDIR		; save last direction quikman was going in
+00016Br 1  A5 42        		LDA JOYVAL
+00016Dr 1  85 41        		STA NEWDIR		; do the same for the joystick
+00016Fr 1  20 rr rr     		JSR MAZEMOVE
+000172r 1  B0 07        		BCS @skip1		; is the direction valid?
+000174r 1  A5 42        		LDA JOYVAL		; nope
+000176r 1  85 43        		STA QMANDIR		; request quikman to move in direction of joystick
+000178r 1  18           		CLC
+000179r 1  90 07        		BCC @skip2
+00017Br 1  A5 43        @skip1:	LDA QMANDIR
+00017Dr 1  85 41        		STA NEWDIR
+00017Fr 1  20 rr rr     		JSR MAZEMOVE	; keep the current direction going?
+000182r 1  AD A2 02     @skip2:	LDA SPRITEX
+000185r 1  D0 05        		BNE @skip3		; is quikman at end of tunnel left?
+000187r 1  A9 9E        		LDA #$9E
+000189r 1  8D A2 02     		STA SPRITEX		; put quikman at beginning of tunnel right
+00018Cr 1  C9 A0        @skip3:	CMP #$A0		; is quikman at end of tunnel right?
+00018Er 1  D0 05        		BNE @skip4
+000190r 1  A9 00        		LDA #$00
+000192r 1  8D A2 02     		STA SPRITEX		; put quikman at beggining of tunnel left
+000195r 1  A2 00        @skip4:	LDX #$00
+000197r 1  AD A2 02     		LDA SPRITEX
+00019Ar 1  29 07        		AND #$07
+00019Cr 1  C9 04        		CMP #$04		; is quikman in the middle of a left/right cell?
+00019Er 1  D0 08        		BNE @skip5
+0001A0r 1  A5 43        		LDA QMANDIR
+0001A2r 1  49 02        		EOR #$02
+0001A4r 1  A8           		TAY
+0001A5r 1  E8           		INX
+0001A6r 1  D0 12        		BNE @skip6
+0001A8r 1  AD A3 02     @skip5:	LDA SPRITEY
+0001ABr 1  29 07        		AND #$07
+0001ADr 1  C9 04        		CMP #$04		; is quikman in the middle of an up/down cell?
+0001AFr 1  D0 09        		BNE @skip6
+0001B1r 1  A4 43        		LDY QMANDIR
+0001B3r 1  C0 01        		CPY #$01
+0001B5r 1  F0 02        		BEQ @next
+0001B7r 1  A0 00        		LDY #$00
+0001B9r 1  E8           @next:	INX
+0001BAr 1  E0 00        @skip6:	CPX #$00
+0001BCr 1  F0 74        		BEQ YUMMY
+0001BEr 1  B9 DD 02     		LDA SAVEBACK,Y	; retrieve the character from quikman's saveback buffer
+0001C1r 1  AA           		TAX
+0001C2r 1  A9 20        		LDA #$20
+0001C4r 1  99 DD 02     		STA SAVEBACK,Y	; replace the cell quikman is on with an empty space
+0001C7r 1  E0 1E        		CPX #$1E		; is it a dot?
+0001C9r 1  D0 3C        		BNE POWERUP
+0001CBr 1  A9 01        		LDA #$01
+0001CDr 1  85 3F        		STA POINTS		; score 1
+0001CFr 1  85 3D        		STA CHEWING		; quikman has to chew this dot, monsters keep movin'
+0001D1r 1  A9 0A        		LDA #$0A		; score it @ 10-point digit
+0001D3r 1  85 3E        		STA DIGIT
+0001D5r 1               ;
+0001D5r 1               ;($11D4)
+0001D5r 1  E6 4A        EATING:	INC DOTS		; ate a dot, account for it
+0001D7r 1  A5 4A        		LDA DOTS
+0001D9r 1  C9 AE        		CMP #$AE		; are all dots eaten?
+0001DBr 1  D0 55        		BNE YUMMY
+0001DDr 1               ;===	end of level	===
+0001DDr 1  20 rr rr     		JSR SPRITES		; redraw sprites
+0001E0r 1  A9 00        		LDA #$00
+0001E2r 1  85 FF        		STA $FF
+0001E4r 1  A9 03        @Loop:	LDA #$03		; turn maze cyan
+0001E6r 1  85 45        		STA MAZE
+0001E8r 1  A0 00        		LDY #$00
+0001EAr 1  A2 00        		LDX #$00
+0001ECr 1  E8           @loop5:	INX				; bad wait loop
+0001EDr 1  D0 FD        		BNE @loop5
+0001EFr 1  C8           		INY
+0001F0r 1  D0 FA        		BNE @loop5
+0001F2r 1  A9 06        		LDA #$06
+0001F4r 1  85 45        		STA MAZE		; turn maze blue
+0001F6r 1  E8           @loop6:	INX				; bad wait loop
+0001F7r 1  D0 FD        		BNE @loop6
+0001F9r 1  C8           		INY
+0001FAr 1  D0 FA        		BNE @loop6
+0001FCr 1  E6 FF        		INC $FF
+0001FEr 1  A5 FF        		LDA $FF
+000200r 1  C9 04        		CMP #$04
+000202r 1  D0 E0        		BNE @Loop
+000204r 1  4C rr rr     		JMP NEXTLEVEL	; complete
+000207r 1               ;
+000207r 1               ;($1206)
+000207r 1               POWERUP:
+000207r 1  E0 22        		CPX #$22
+000209r 1  90 17        		BCC @skip1		; is X < 34 ?
+00020Br 1  E0 2A        		CPX #$2A		; no, is X >= 42 ?
+00020Dr 1  B0 23        		BCS YUMMY		; ate a piece of fruit?
+00020Fr 1  8A           		TXA				; YUMMY!
+000210r 1  38           		SEC
+000211r 1  E9 22        		SBC #$22		; strip off char code for score index
+000213r 1  AA           		TAX
+000214r 1  BD rr rr     		LDA FRUITSCORE,X
+000217r 1  85 3F        		STA POINTS		; award points
+000219r 1  A9 09        		LDA #$09
+00021Br 1  85 3E        		STA DIGIT		; in hundreds
+00021Dr 1  85 3C        		STA CHOMP
+00021Fr 1  18           		CLC
+000220r 1  90 10        		BCC YUMMY
+000222r 1  E0 1F        @skip1:	CPX #$1F		; ate a powerpill?
+000224r 1  D0 0C        		BNE YUMMY
+000226r 1  A9 05        		LDA #$05
+000228r 1  85 3F        		STA POINTS		; award 5-points
+00022Ar 1  A9 0A        		LDA #$0A
+00022Cr 1  85 3E        		STA DIGIT		; score @ 10-digit
+00022Er 1  85 3B        		STA PPILLFLAG
+000230r 1  D0 A3        		BNE EATING		; powerpills are dots on steroids, account for it
+000232r 1               ;
+000232r 1               ;($1231)
+000232r 1               YUMMY:
+000232r 1  A5 3A        		LDA FRUITFLAG
+000234r 1  D0 24        		BNE @skip3		; is fruit already on display?
+000236r 1  A5 4A        		LDA DOTS
+000238r 1  C9 4B        		CMP #$4B		; has the 75th dot been eaten?
+00023Ar 1  F0 04        		BEQ @skip1
+00023Cr 1  C9 7D        		CMP #$7D		; has the 125th dot been eaten?
+00023Er 1  D0 1A        		BNE @skip3
+000240r 1  A6 49        @skip1:	LDX FRUITLEVEL	; prepare thy bonus
+000242r 1  E0 0C        		CPX #$0C		; reach the last level?
+000244r 1  90 02        		BCC @skip2
+000246r 1  A2 0C        		LDX #$0C		; only the key is left, and it leaves a bad metallic after-taste
+000248r 1  BD rr rr     @skip2:	LDA FRUIT,X
+00024Br 1  8D 1B 1F     		STA FRUITCELL	; display fruit
+00024Er 1  BD rr rr     		LDA FRUITCLR,X
+000251r 1  8D 1B 97     		STA FRUITCELLCLR
+000254r 1  A9 F2        		LDA #$F2		; 242-moves and counting
+000256r 1  85 39        		STA FRUITTIMER	; reset fruit timer
+000258r 1  85 3A        		STA FRUITFLAG
+00025Ar 1  A5 39        @skip3:	LDA FRUITTIMER	; fruit is on display
+00025Cr 1  F0 09        		BEQ @skip4		; nothing to do
+00025Er 1  C6 39        		DEC FRUITTIMER	; remove a tick
+000260r 1  D0 05        		BNE @skip4		; there is still time left
+000262r 1  A9 20        		LDA #$20		; time's up!
+000264r 1  8D 1B 1F     		STA FRUITCELL	; no more fruit
+000267r 1  A5 4A        @skip4:	LDA DOTS
+000269r 1  C9 4C        		CMP #$4C		; has the 76th dot been eaten?
+00026Br 1  F0 04        		BEQ @skip5
+00026Dr 1  C9 7E        		CMP #$7E		; has the 126th dot been eaten?
+00026Fr 1  D0 04        		BNE @skip6
+000271r 1  A9 00        @skip5:	LDA #$00
+000273r 1  85 3A        		STA FRUITFLAG	; more fruit on this level
+000275r 1               ;
+000275r 1  A5 3B        @skip6:	LDA PPILLFLAG
+000277r 1  F0 23        		BEQ @skip8		; just swallowed a powerpill?
+000279r 1  A5 49        		LDA FRUITLEVEL
+00027Br 1  0A           		ASL				; multiply 8
+00027Cr 1  0A           		ASL
+00027Dr 1  0A           		ASL
+00027Er 1  85 FF        		STA $FF			; shrink powerpill effectiveness per level
+000280r 1  A9 F8        		LDA #$F8
+000282r 1  38           		SEC
+000283r 1  E5 FF        		SBC $FF
+000285r 1  85 10        		STA PPILLTIMER	; set powerpill timer
+000287r 1  A0 00        		LDY #$00
+000289r 1  B6 4B        @loop1:	LDX PENALTY,Y
+00028Br 1  D0 0A        		BNE @skip7		; is monster waiting in cage already?
+00028Dr 1  A9 06        		LDA #$06		; no, make monster blue
+00028Fr 1  99 B3 02     		STA SPRITECLR+1,Y
+000292r 1  A9 80        		LDA #$80		; make monster fleeing (0)
+000294r 1  99 BB 02     		STA SPRITEIMG1+1,Y
+000297r 1  C8           @skip7:	INY
+000298r 1  C0 04        		CPY #$04
+00029Ar 1  D0 ED        		BNE @loop1
+00029Cr 1  A5 10        @skip8:	LDA PPILLTIMER
+00029Er 1  F0 22        		BEQ CHASING		; are monsters fleeing?
+0002A0r 1  C9 41        		CMP #$41		; yes ... but are they
+0002A2r 1  B0 1A        		BCS @skipA		; getting confidence back?
+0002A4r 1  29 08        		AND #$08		; yes, let's warn quikman
+0002A6r 1  F0 16        		BEQ @skipA
+0002A8r 1  A0 00        		LDY #$00
+0002AAr 1  B9 BB 02     @loop2:	LDA SPRITEIMG1+1,Y
+0002ADr 1  C9 80        		CMP #$80		; is monster fleeing?
+0002AFr 1  D0 08        		BNE @skip9
+0002B1r 1  B9 B3 02     		LDA SPRITECLR+1,Y
+0002B4r 1  49 07        		EOR #$07		; flash white / blue
+0002B6r 1  99 B3 02     		STA SPRITECLR+1,Y
+0002B9r 1  C8           @skip9:	INY
+0002BAr 1  C0 04        		CPY #$04
+0002BCr 1  D0 EC        		BNE @loop2
+0002BEr 1  C6 10        @skipA:	DEC PPILLTIMER	; drain powerpill
+0002C0r 1  D0 12        		BNE SR12D3		; is there still power left?
+0002C2r 1               ;
+0002C2r 1               ;($12C1)
+0002C2r 1               ; restore all monsters to their default colors and chase mode
+0002C2r 1               CHASING:
+0002C2r 1  A0 00        		LDY #$00
+0002C4r 1  B9 rr rr     @loop:	LDA MONSTERCLR,Y
+0002C7r 1  99 B3 02     		STA SPRITECLR+1,Y
+0002CAr 1  A9 78        		LDA #$78		; restore monster chasing image (/)
+0002CCr 1  99 BB 02     		STA SPRITEIMG1+1,Y
+0002CFr 1  C8           		INY
+0002D0r 1  C0 04        		CPY #$04		; four monsters
+0002D2r 1  D0 F0        		BNE @loop
+0002D4r 1               ;
+0002D4r 1               ;($12D3)
+0002D4r 1               SR12D3:
+0002D4r 1  20 rr rr     		JSR PAUSING		; is the action pausing?
+0002D7r 1  EA           		NOP
+0002D8r 1  EA           		NOP
+0002D9r 1  A2 00        		LDX #$00
+0002DBr 1  A5 3B        		LDA PPILLFLAG
+0002DDr 1  F0 08        		BEQ @skip1		; just swallowed a powerpill?
+0002DFr 1  A9 00        		LDA #$00		; yes ...
+0002E1r 1  85 3B        		STA $3B			; account for that action
+0002E3r 1  A9 02        		LDA #$02		; start scoring @ 200-points
+0002E5r 1  85 70        		STA FLEEINGSCORE
+0002E7r 1  A0 00        @skip1:	LDY #$00
+0002E9r 1  AD A2 02     SR12E8:	LDA SPRITEX
+0002ECr 1  D9 A4 02     		CMP SPRITEX+2,Y
+0002EFr 1  D0 13        		BNE @skip3
+0002F1r 1  AD A3 02     		LDA SPRITEY
+0002F4r 1  38           		SEC
+0002F5r 1  F9 A5 02     		SBC SPRITEY+2,Y
+0002F8r 1  B0 02        		BCS @skip2
+0002FAr 1  49 FF        		EOR #$FF
+0002FCr 1  C9 05        @skip2:	CMP #$05
+0002FEr 1  B0 04        		BCS @skip3
+000300r 1  A2 FF        		LDX #$FF
+000302r 1  D0 23        		BNE ENGAGED		; is quikman engaged with a monster?
+000304r 1  AD A3 02     @skip3:	LDA SPRITEY
+000307r 1  D9 A5 02     		CMP SPRITEY+2,Y
+00030Ar 1  D0 13        		BNE NEXTKISS
+00030Cr 1  AD A2 02     		LDA SPRITEX
+00030Fr 1  38           		SEC
+000310r 1  F9 A4 02     		SBC SPRITEX+2,Y
+000313r 1  B0 02        		BCS @skip4
+000315r 1  49 FF        		EOR #$FF
+000317r 1  C9 05        @skip4:	CMP #$05
+000319r 1  B0 04        		BCS NEXTKISS
+00031Br 1  A2 FF        		LDX #$FF
+00031Dr 1  D0 08        		BNE ENGAGED		; is quikman engaged with a monster?
+00031Fr 1               ;
+00031Fr 1               ;($131E)
+00031Fr 1               NEXTKISS:
+00031Fr 1  C8           		INY				; increment for next
+000320r 1  C8           		INY				; X,Y coord pair check
+000321r 1  C0 08        		CPY #$08
+000323r 1  90 C4        		BCC SR12E8
+000325r 1  B0 4F        		BCS MONSTERS	; quikman is still freely running!
+000327r 1               ;
+000327r 1               ;($1326)
+000327r 1               ENGAGED:
+000327r 1  98           		TYA
+000328r 1  4A           		LSR
+000329r 1  AA           		TAX
+00032Ar 1  BD BB 02     		LDA SPRITEIMG1+1,X
+00032Dr 1  C9 80        		CMP #$80		; is monster fleeing?
+00032Fr 1  F0 1B        		BEQ CAUGHTONE	; ahah!
+000331r 1  A0 00        		LDY #$00		; ooops... quikman got it
+000333r 1  A2 00        		LDX #$00
+000335r 1  E8           @loop2:	INX				; bad wait loop
+000336r 1  D0 FD        		BNE @loop2
+000338r 1  C8           		INY
+000339r 1  D0 FA        		BNE @loop2
+00033Br 1  C6 44        		DEC LIVES
+00033Dr 1  D0 03        		BNE DEAD		; any lives remaining?
+00033Fr 1  4C rr rr     		JMP RESTART		; game over
+000342r 1               ;
+000342r 1               ;($1341)
+000342r 1               DEAD:
+000342r 1  A6 44        		LDX LIVES
+000344r 1  A9 20        		LDA #$20
+000346r 1  9D E3 1F     		STA $1FE3,X		; erase avatar
+000349r 1  4C rr rr     		JMP DEATH
+00034Cr 1               ;
+00034Cr 1               ;($134B)
+00034Cr 1               CAUGHTONE:
+00034Cr 1  A9 09        		LDA #$09
+00034Er 1  85 3E        		STA DIGIT		; in hundreds
+000350r 1  A5 70        		LDA FLEEINGSCORE
+000352r 1  85 3F        		STA POINTS		; fleeing monster score
+000354r 1  0A           		ASL				; next is worth x2 bonus
+000355r 1  85 70        		STA FLEEINGSCORE
+000357r 1  A9 78        		LDA #$78
+000359r 1  9D BB 02     		STA SPRITEIMG1+1,X		; reset monster as chasing
+00035Cr 1  BD rr rr     		LDA MONSTERCLR,X
+00035Fr 1  9D B3 02     		STA SPRITECLR+1,X
+000362r 1  8A           		TXA
+000363r 1  0A           		ASL
+000364r 1  AA           		TAX
+000365r 1  A9 50        		LDA #$50		; reset "X" coord in cage
+000367r 1  9D A4 02     		STA $02A4,X
+00036Ar 1  A9 58        		LDA #$58		; reset "Y" coord in cage
+00036Cr 1  9D A5 02     		STA $02A5,X
+00036Fr 1  EA           		NOP
+000370r 1  20 rr rr     		JSR SR106E
+000373r 1  18           		CLC
+000374r 1  90 A9        		BCC NEXTKISS	; is there another monster here?
+000376r 1               ;
+000376r 1               ;($1375)
+000376r 1               MONSTERS:
+000376r 1  78           		SEI				; lock-out any background changes
+000377r 1               QUIKMAN:
+000377r 1  A5 10        		LDA PPILLTIMER
+000379r 1  29 01        		AND #$01		; during fleeing mode, all monsters move
+00037Br 1  D0 18        		BNE CONT		; every-other frame, regardless
+00037Dr 1  A9 01        		LDA #$01
+00037Fr 1  85 00        		STA $00			; start with monster #1
+000381r 1               ;
+000381r 1               ;($1380)
+000381r 1               DOMONSTER:
+000381r 1  0A           		ASL
+000382r 1  85 01        		STA $01
+000384r 1  A4 00        		LDY $00
+000386r 1  B6 4A        		LDX $4A,Y
+000388r 1  F0 11        		BEQ ITMOVES		; is this monster free to roam?
+00038Ar 1  CA           		DEX				; no, countdown to freedom
+00038Br 1  96 4A        		STX $4A,Y
+00038Dr 1               ;
+00038Dr 1               ;($138C)
+00038Dr 1               NEXTMONSTER:
+00038Dr 1  E6 00        		INC $00			; process next monster
+00038Fr 1  A5 00        		LDA $00
+000391r 1  C9 05        		CMP #$05		; all 5-sprites processed?
+000393r 1  90 EC        		BCC DOMONSTER
+000395r 1  20 CF 1C     CONT:	JSR $1CCF		; issues
+000398r 1  4C rr rr     		JMP PLAYLOOP
+00039Br 1               ;
+00039Br 1               ITMOVES:
+00039Br 1  A6 01        		LDX $01			; get pairing index
+00039Dr 1  BD A2 02     		LDA SPRITEX,X
+0003A0r 1  C9 50        		CMP #$50
+0003A2r 1  D0 12        		BNE @skip1
+0003A4r 1  BD A3 02     		LDA SPRITEY,X
+0003A7r 1  C9 58        		CMP #$58
+0003A9r 1  D0 0B        		BNE @skip1		; is monster in cage ($50,$58 coord) doorway ?
+0003ABr 1  A9 57        		LDA #$57		; could have just used DEC SPRITEY,X instead
+0003ADr 1  9D A3 02     		STA SPRITEY,X	; move it a pixel UP to force it through the closed door
+0003B0r 1  A2 03        		LDX #$03
+0003B2r 1  96 4E        		STX $4E,Y		; make direction UP to get out of cage
+0003B4r 1  D0 13        		BNE @skip3
+0003B6r 1  BD A2 02     @skip1:	LDA SPRITEX,X
+0003B9r 1  D0 04        		BNE @skip2		; is monster against the left-side of the tunnel?
+0003BBr 1  A6 00        		LDX $00
+0003BDr 1  95 4E        		STA $4E,X		; force a change of direction to the right
+0003BFr 1  C9 9F        @skip2:	CMP #$9F		; is monster against the right-side of the tunnel?
+0003C1r 1  D0 06        		BNE @skip3
+0003C3r 1  A6 00        		LDX $00
+0003C5r 1  A9 02        		LDA #$02
+0003C7r 1  95 4E        		STA $4E,X		; force a change of direction to the left
+0003C9r 1  A0 00        @skip3:	LDY #$00
+0003CBr 1  A2 00        		LDX #$00
+0003CDr 1  96 61        @loop1:	STX $61,Y		; preset move priority as 0=right,1=down,2=left,3=up
+0003CFr 1  C8           		INY
+0003D0r 1  E8           		INX
+0003D1r 1  E0 04        		CPX #$04
+0003D3r 1  90 F8        		BCC @loop1
+0003D5r 1  A4 01        		LDY $01			; start of monster's calculated move
+0003D7r 1  B9 A2 02     		LDA SPRITEX,Y
+0003DAr 1  29 07        		AND #$07
+0003DCr 1  F0 07        		BEQ @skip4		; is monster horizontally aligned with a screen cell?
+0003DEr 1  B9 A3 02     		LDA SPRITEY,Y
+0003E1r 1  29 07        		AND #$07
+0003E3r 1  D0 06        		BNE @skip5		; is monster vertically aligned with a screen cell?
+0003E5r 1  20 rr rr     @skip4:	JSR SR1457		; yes, check to see if a direction change is in its future
+0003E8r 1  18           		CLC
+0003E9r 1  90 04        		BCC @skip6
+0003EBr 1  B6 4E        @skip5:	LDX $4E,Y		; not in a position to make a direction change,
+0003EDr 1  86 61        		STX $61			; so just keep monster going in its current direction
+0003EFr 1  A0 00        @skip6:	LDY #$00
+0003F1r 1  84 04        		STY $04
+0003F3r 1  B6 61        @loop2:	LDX $61,Y
+0003F5r 1  8A           		TXA
+0003F6r 1  A6 00        		LDX $00
+0003F8r 1  55 4E        		EOR $4E,X
+0003FAr 1  C9 02        		CMP #$02
+0003FCr 1  F0 0F        		BEQ @skip7		; don't allow monsters to reverse direction on their own
+0003FEr 1  B6 61        		LDX $61,Y
+000400r 1  86 41        		STX NEWDIR
+000402r 1  A4 00        		LDY $00
+000404r 1  B6 4E        		LDX $4E,Y
+000406r 1  86 40        		STX OLDDIR
+000408r 1  20 rr rr     		JSR MAZEMOVE	; validate
+00040Br 1  90 42        		BCC MAKEMOVE	; is this a good move?
+00040Dr 1  E6 04        @skip7:	INC $04
+00040Fr 1  A4 04        		LDY $04
+000411r 1  C0 04        		CPY #$04
+000413r 1  D0 DE        		BNE @loop2
+000415r 1  4C rr rr     		JMP NEXTMONSTER
+000418r 1  EA           		NOP				; legacy reasons
+000419r 1               ;
+000419r 1               ; preload $61-$64 with "best" moves this monster can make
+000419r 1               ; to give quikman the kiss of death
+000419r 1               ;($1418)
+000419r 1               AI:
+000419r 1  A6 01        		LDX $01
+00041Br 1  B5 51        		LDA $51,X		; retrieve this monster's "X" knowledge where quikman was
+00041Dr 1  38           		SEC
+00041Er 1  FD A2 02     		SBC SPRITEX,X
+000421r 1  B0 0A        		BCS @skip1
+000423r 1  A0 02        		LDY #$02
+000425r 1  84 61        		STY $61			; LEFT is best
+000427r 1  A0 00        		LDY #$00
+000429r 1  84 64        		STY $64			; RIGHT is worst
+00042Br 1  F0 08        		BEQ @skip2
+00042Dr 1  A0 00        @skip1:	LDY #$00
+00042Fr 1  84 61        		STY $61			; RIGHT is best
+000431r 1  A0 02        		LDY #$02
+000433r 1  84 64        		STY $64			; LEFT is worst
+000435r 1  B5 52        @skip2:	LDA $52,X		; retrieve this monster's "Y" knowledge where quikman was
+000437r 1  38           		SEC
+000438r 1  FD A3 02     		SBC SPRITEY,X
+00043Br 1  B0 09        		BCS @skip3
+00043Dr 1  A0 03        		LDY #$03
+00043Fr 1  84 62        		STY $62			; UP is 2nd best
+000441r 1  A0 01        		LDY #$01
+000443r 1  84 63        		STY $63			; DOWN is 3rd best
+000445r 1  60           		RTS
+000446r 1  A0 01        @skip3:	LDY #$01		; DOWN is 2nd best
+000448r 1  84 62        		STY $62
+00044Ar 1  A0 03        		LDY #$03		; UP is 3rd best
+00044Cr 1  84 63        		STY $63
+00044Er 1  60           		RTS
+00044Fr 1               ;
+00044Fr 1               ;($144E)
+00044Fr 1               MAKEMOVE:
+00044Fr 1  A4 00        		LDY $00			; commit to this move
+000451r 1  A6 41        		LDX NEWDIR
+000453r 1  96 4E        		STX $4E,Y		; save as monster's current direction
+000455r 1  4C rr rr     		JMP NEXTMONSTER
+000458r 1               ;
+000458r 1               ; prioritize monster move, based upon its current location in respect to
+000458r 1               ; its knowledge where quikman was considered last.
+000458r 1               ;$(1457)
+000458r 1               SR1457:
+000458r 1  20 rr rr     		JSR AI			; make monsters with varying intelligence
+00045Br 1  A6 01        		LDX $01
+00045Dr 1  B5 51        		LDA $51,X
+00045Fr 1  38           		SEC
+000460r 1  FD A2 02     		SBC SPRITEX,X
+000463r 1  B0 02        		BCS @skip1
+000465r 1  49 FF        		EOR #$FF
+000467r 1  85 69        @skip1:	STA $69
+000469r 1  B5 52        		LDA $52,X
+00046Br 1  38           		SEC
+00046Cr 1  FD A3 02     		SBC SPRITEY,X
+00046Fr 1  B0 02        		BCS @skip2
+000471r 1  49 FF        		EOR #$FF
+000473r 1  C5 69        @skip2:	CMP $69
+000475r 1  90 11        		BCC @skip3		; can monster improve upon order of choices?
+000477r 1  EA           		NOP
+000478r 1  A6 61        		LDX $61			; swap 1st & 2nd choices
+00047Ar 1  A4 62        		LDY $62
+00047Cr 1  86 62        		STX $62
+00047Er 1  84 61        		STY $61
+000480r 1  A4 63        		LDY $63			; swap 3rd & 4th choices
+000482r 1  A6 64        		LDX $64
+000484r 1  84 64        		STY $64
+000486r 1  86 63        		STX $63
+000488r 1  A5 10        @skip3:	LDA $10
+00048Ar 1  F0 14        		BEQ @fini		; monsters are in chase mode
+00048Cr 1  A2 00        		LDX #$00
+00048Er 1  B5 61        @loop1:	LDA $61,X
+000490r 1  48           		PHA
+000491r 1  E8           		INX
+000492r 1  E0 04        		CPX #$04
+000494r 1  D0 F8        		BNE @loop1
+000496r 1  A2 00        		LDX #$00
+000498r 1  68           @loop2:	PLA
+000499r 1  95 61        		STA $61,X		; reverse logic when in flee mode
+00049Br 1  E8           		INX
+00049Cr 1  E0 04        		CPX #$04
+00049Er 1  D0 F8        		BNE @loop2
+0004A0r 1  60           @fini:	RTS
+0004A1r 1               ;
+0004A1r 1               ; some sound effects and extras
+0004A1r 1               ;($14A0)
+0004A1r 1               SR14A0:
+0004A1r 1  A5 3D        		LDA CHEWING
+0004A3r 1  F0 05        		BEQ @skip1
+0004A5r 1  A9 91        		LDA #$91		; start with an odd frequency
+0004A7r 1  8D 0C 90     		STA VIC+$0C		; ignite a voice
+0004AAr 1  A9 00        @skip1:	LDA #$00		; dot is swallowed
+0004ACr 1  85 3D        		STA CHEWING
+0004AEr 1  AD 0C 90     		LDA VIC+$0C
+0004B1r 1  F0 23        		BEQ @next1		; is this voice mute?
+0004B3r 1  AD 0C 90     		LDA VIC+$0C
+0004B6r 1  29 01        		AND #$01
+0004B8r 1  F0 13        		BEQ @skip3		; is it even?
+0004BAr 1  AD 0C 90     		LDA VIC+$0C
+0004BDr 1  18           		CLC
+0004BEr 1  69 10        		ADC #$10		; increase tone
+0004C0r 1  C9 F1        		CMP #$F1
+0004C2r 1  90 03        		BCC @skip2		; is voice too high?
+0004C4r 1  38           		SEC
+0004C5r 1  E9 01        		SBC #$01		; make it even
+0004C7r 1  8D 0C 90     @skip2:	STA VIC+$0C
+0004CAr 1  18           		CLC
+0004CBr 1  90 09        		BCC @next1		; goto next effect
+0004CDr 1  AD 0C 90     @skip3:	LDA VIC+$0C
+0004D0r 1  38           		SEC
+0004D1r 1  E9 10        		SBC #$10		; drain tone
+0004D3r 1  8D 0C 90     		STA VIC+$0C
+0004D6r 1  A6 3C        @next1:	LDX CHOMP
+0004D8r 1  F0 08        		BEQ @skip4
+0004DAr 1  BD rr rr     		LDA SNDBIT,X	; load tone data
+0004DDr 1  8D 0B 90     		STA VIC+$0B
+0004E0r 1  C6 3C        		DEC CHOMP
+0004E2r 1  AD 0E 90     @skip4:	LDA VIC+$0E
+0004E5r 1  D0 04        		BNE @next2
+0004E7r 1  8D E0 03     		STA EXTRAQMAN	; reset bonus when volume is mute
+0004EAr 1  60           @fini:	RTS
+0004EBr 1  AD E0 03     @next2:	LDA EXTRAQMAN
+0004EEr 1  D0 FA        		BNE @fini
+0004F0r 1  AD 07 17     		LDA SCORE+1
+0004F3r 1  C9 B1        		CMP #$B1		; did quikman just score 10,000-points?
+0004F5r 1  D0 F3        		BNE @fini
+0004F7r 1  8D E0 03     		STA EXTRAQMAN
+0004FAr 1  E6 44        		INC LIVES		; reward
+0004FCr 1  A9 09        		LDA #$09
+0004FEr 1  85 3C        		STA CHOMP		; make some noise
+000500r 1  60           		RTS
+000501r 1               ;
+000501r 1               ;($1500)
+000501r 1               SR1500:
+000501r 1  A0 00        		LDY #$00
+000503r 1  8C F0 03     SR1502:	STY $03F0
+000506r 1  AD F0 03     		LDA $03F0
+000509r 1  0A           		ASL
+00050Ar 1  8D F1 03     		STA $03F1
+00050Dr 1  0A           		ASL
+00050Er 1  8D F2 03     		STA $03F2
+000511r 1  18           		CLC
+000512r 1  90 54        		BCC SR1567		; go there to check this, then come back (JSR)
+000514r 1  B9 rr rr     SR1513:	LDA CAGEDATA,Y
+000517r 1  F0 0D        		BEQ AWARENESS	; is monster "smart"?  Red one is ...
+000519r 1  C5 A2        		CMP JIFFYL		; no, so check as often as it waits
+00051Br 1  F0 09        		BEQ AWARENESS	; is its wait time equal to the jiffy clock?
+00051Dr 1  AC F0 03     SR151C:	LDY $03F0
+000520r 1  C8           		INY
+000521r 1  C0 04        		CPY #$04
+000523r 1  D0 DE        		BNE SR1502
+000525r 1  60           		RTS
+000526r 1               ;
+000526r 1               ; update this monster's awareness to where quikman is
+000526r 1               ;($1525)
+000526r 1               AWARENESS:
+000526r 1  AC F1 03     		LDY $03F1
+000529r 1  AE A2 02     		LDX SPRITEX
+00052Cr 1  96 53        		STX $53,Y
+00052Er 1  AE A3 02     		LDX SPRITEY
+000531r 1  96 54        		STX $54,Y
+000533r 1  18           		CLC
+000534r 1  90 E7        		BCC SR151C
+000536r 1               ;
+000536r 1               ;($1535)
+000536r 1               NEXTLEVEL:
+000536r 1  20 rr rr     		JSR INITVARS
+000539r 1  A2 04        		LDX #$04
+00053Br 1  B5 4A        @loop1:	LDA $4A,X
+00053Dr 1  A4 49        		LDY FRUITLEVEL
+00053Fr 1  C8           		INY
+000540r 1  4A           @loop2:	LSR
+000541r 1  88           		DEY
+000542r 1  D0 FC        		BNE @loop2
+000544r 1  95 4A        		STA $4A,X		; after each level, the monsters dispatch quicker
+000546r 1  CA           		DEX
+000547r 1  D0 F2        		BNE @loop1
+000549r 1  4C rr rr     		JMP RESETSND
+00054Cr 1               ;
+00054Cr 1               ;($154B)
+00054Cr 1               RESURRECT:
+00054Cr 1  20 rr rr     		JSR INITVARS
+00054Fr 1  4C rr rr     		JMP RESETCHR
+000552r 1               ;
+000552r 1               ;($1551)
+000552r 1               PAUSING:
+000552r 1  AD 8D 02     		LDA CTRLCSHIFT	; is the player holding down any
+000555r 1  D0 FB        		BNE PAUSING		; control, commodore, shift key(s)?
+000557r 1  60           		RTS
+000558r 1               ;
+000558r 1               ;($1557)
+000558r 1  00 00 00 00  		.byte	$00, $00, $00, $00, $00, $00
+00055Cr 1  00 00        
+00055Er 1  00 00 C0 B8  SNDBIT:	.byte	$00, $00, $C0, $B8, $B0, $A8, $B0, $B8, $C0, $C8
+000562r 1  B0 A8 B0 B8  
+000566r 1  C0 C8        
+000568r 1               ;
+000568r 1               ;($1567)
+000568r 1               SR1567:
+000568r 1  AC F2 03     		LDY $03F2
+00056Br 1  A5 4A        		LDA DOTS
+00056Dr 1  C9 AA        		CMP #$AA		; make them all "smart" when nearing the end
+00056Fr 1  B0 B5        		BCS AWARENESS
+000571r 1  90 A1        		BCC SR1513
+000573r 1               ;
+000573r 1               ;($1572)
+000573r 1  00 00 00 00  		.byte	$00, $00, $00, $00
+000577r 1               ;
+000577r 1               ;($1576)
+000577r 1               INITVARS:
+000577r 1  A0 00        		LDY #$00
+000579r 1  BE rr rr     @loop:	LDX CAGEDATA,Y
+00057Cr 1  96 4B        		STX PENALTY,Y
+00057Er 1  C8           		INY
+00057Fr 1  C0 10        		CPY #$10
+000581r 1  D0 F6        		BNE @loop
+000583r 1  60           		RTS
+000584r 1               ;
+000584r 1               ;($1583)	zero $3A - $43
+000584r 1               ZEROVARS:
+000584r 1  A0 3A        		LDY #$3A
+000586r 1  A2 00        		LDX #$00
+000588r 1  96 00        @loop:	STX $00,Y
+00058Ar 1  C8           		INY
+00058Br 1  C0 44        		CPY #$44
+00058Dr 1  D0 F9        		BNE @loop
+00058Fr 1  60           		RTS
+000590r 1               ;
+000590r 1               ;($158F)
+000590r 1               ADDSCORE:
+000590r 1  A4 3F        		LDY POINTS
+000592r 1  D0 01        		BNE @skip1
+000594r 1  60           		RTS
+000595r 1  A6 3E        @skip1:	LDX DIGIT
+000597r 1  BD rr rr     @loop1:	LDA ScreenData,X
+00059Ar 1  C9 B9        		CMP #$B9		; reach "9" ?
+00059Cr 1  F0 07        		BEQ @skip2
+00059Er 1  FE rr rr     		INC ScreenData,X		; ding!
+0005A1r 1  88           		DEY
+0005A2r 1  D0 F1        		BNE @skip1
+0005A4r 1  60           		RTS
+0005A5r 1  A9 B0        @skip2:	LDA #$B0
+0005A7r 1  9D rr rr     		STA ScreenData,X		; wrap to "0"
+0005AAr 1  CA           		DEX				; and increment next order
+0005ABr 1  18           		CLC
+0005ACr 1  90 E9        		BCC @loop1
+0005AEr 1               ;
+0005AEr 1               ;$(15AD)
+0005AEr 1               JOYSTICK:
+0005AEr 1  A6 42        		LDX JOYVAL		; recall last joystick value
+0005B0r 1  A9 00        		LDA #$00
+0005B2r 1  8D 13 91     		STA $9113
+0005B5r 1  A9 7F        		LDA #$7F
+0005B7r 1  8D 22 91     		STA $9122
+0005BAr 1  AD 20 91     		LDA $9120
+0005BDr 1  29 80        		AND #$80		; JOY 3
+0005BFr 1  D0 02        		BNE @skip1
+0005C1r 1  A2 00        		LDX #$00
+0005C3r 1  A9 FF        @skip1:	LDA #$FF
+0005C5r 1  8D 22 91     		STA $9122
+0005C8r 1  AC 11 91     		LDY $9111
+0005CBr 1  98           		TYA
+0005CCr 1  29 08        		AND #$08
+0005CEr 1  D0 02        		BNE @skip2
+0005D0r 1  A2 01        		LDX #$01
+0005D2r 1  98           @skip2:	TYA
+0005D3r 1  29 10        		AND #$10
+0005D5r 1  D0 02        		BNE @skip3
+0005D7r 1  A2 02        		LDX #$02
+0005D9r 1  98           @skip3:	TYA
+0005DAr 1  29 04        		AND #$04
+0005DCr 1  D0 02        		BNE @skip4
+0005DEr 1  A2 03        		LDX #$03
+0005E0r 1  86 42        @skip4:	STX JOYVAL		; save
+0005E2r 1  60           		RTS
+0005E3r 1               ;
+0005E3r 1               ;($15E2) Refresh screen
+0005E3r 1               REDRAW:
+0005E3r 1  E6 49        		INC FRUITLEVEL
+0005E5r 1  A9 93        		LDA #$93		; Shift-HOME is clearscreen
+0005E7r 1  20 D2 FF     		JSR	CHROUT		; print it
+0005EAr 1  A2 14        		LDX #$14		; skip 1st row -- scoring information
+0005ECr 1  A0 00        		LDY #$00
+0005EEr 1  BD rr rr     @loop:	LDA ScreenData,X
+0005F1r 1  9D 00 1E     		STA $1E00,X
+0005F4r 1  B9 rr rr     		LDA ScreenData+$0100,Y
+0005F7r 1  99 00 1F     		STA $1F00,Y
+0005FAr 1  C8           		INY
+0005FBr 1  E8           		INX
+0005FCr 1  D0 F0        		BNE @loop
+0005FEr 1  86 4A        		STX DOTS		; and no dots are eaten (yet)
+000600r 1  60           		RTS
+000601r 1               ;
+000601r 1               ;($1600)
+000601r 1               BANNERMSG:
+000601r 1               				;©1984 ROBERT HURST
+000601r 1  3F B1 B9 B8  		.byte	$3F, $B1, $B9, $B8, $B4, $A0, $92, $8F, $82, $85, $92, $94, $A0, $88, $95, $92, $93, $94
+000605r 1  B4 A0 92 8F  
+000609r 1  82 85 92 94  
+000613r 1               				;PRESS 'F7' TO PLAY
+000613r 1  90 92 85 93  		.byte	$90, $92, $85, $93, $93, $A0, $A7, $86, $B7, $A7, $A0, $94, $8F, $A0, $90, $8C, $81, $99
+000617r 1  93 A0 A7 86  
+00061Br 1  B7 A7 A0 94  
+000625r 1               ;
+000625r 1               ;($1624)		cherry, strawberry, 2-peach, 2-apple, 2-pineapple, 2-tbird, 2-bell, key
+000625r 1  22 23 24 24  FRUIT:	.byte	$22, $23, $24, $24, $25, $25, $26, $26, $27, $27, $28, $28, $29
+000629r 1  25 25 26 26  
+00062Dr 1  27 27 28 28  
+000632r 1               ;
+000632r 1               ;($1631)		red, red, 2-yellow, 2-red, 2-green, 2-magenta, 2-yellow, cyan
+000632r 1               FRUITCLR:
+000632r 1  02 02 07 07  		.byte	$02, $02, $07, $07, $02, $02, $05, $05, $04, $04, $07, $07, $03
+000636r 1  02 02 05 05  
+00063Ar 1  04 04 07 07  
+00063Fr 1               ;($163E)
+00063Fr 1               STARTPOS:
+00063Fr 1  50 88 50 48  		.byte	$50, $88, $50, $48, $50, $58, $60, $58, $40, $58
+000643r 1  50 58 60 58  
+000647r 1  40 58        
+000649r 1               ;
+000649r 1               ;($1648)
+000649r 1               ;animate the quikman
+000649r 1               ANIMQMAN:
+000649r 1  A2 50        		LDX #$50		; closed mouth
+00064Br 1  A5 A2        		LDA JIFFYL
+00064Dr 1  29 04        		AND #$04		; flip every 4-jiffies
+00064Fr 1  F0 09        		BEQ @skip1
+000651r 1  A5 43        		LDA QMANDIR		; take 0=right,1=down,2=left,3=up value
+000653r 1  0A           		ASL				; multiply by 8 to get address
+000654r 1  0A           		ASL
+000655r 1  0A           		ASL
+000656r 1  18           		CLC
+000657r 1  69 58        		ADC #$58		; add base offset
+000659r 1  AA           		TAX
+00065Ar 1  A0 00        @skip1:	LDY #$00
+00065Cr 1  BD 00 1D     @loop1:	LDA $1D00,X		; copy a quikman image
+00065Fr 1  99 E8 1C     		STA $1CE8,Y		; into its sprite
+000662r 1  E8           		INX
+000663r 1  C8           		INY
+000664r 1  C0 08        		CPY #$08
+000666r 1  D0 F4        		BNE @loop1
+000668r 1  60           		RTS
+000669r 1               ;
+000669r 1               ; if move is valid, carry flag will be clear on return
+000669r 1               ;($1668)
+000669r 1               MAZEMOVE:
+000669r 1  A4 01        		LDY $01			; get X,Y coord index
+00066Br 1  A5 40        		LDA OLDDIR		; get the last direction moving
+00066Dr 1  29 01        		AND #$01		; mask UP/DOWN
+00066Fr 1  F0 01        		BEQ @skip1		; is direction LEFT/RIGHT?
+000671r 1  C8           		INY				; no, then fetch the "Y" coordinate
+000672r 1  B9 A2 02     @skip1:	LDA SPRITEX,Y	; get one of sprite's coord
+000675r 1  29 07        		AND #$07
+000677r 1  F0 0E        		BEQ MAZEANY		; at a crossroad?  check move in any 4-directions
+000679r 1  A5 41        		LDA NEWDIR
+00067Br 1  C5 40        		CMP OLDDIR
+00067Dr 1  F0 3C        		BEQ MYMOVE		; still want to move in the same direction?
+00067Fr 1  45 40        		EOR OLDDIR
+000681r 1  C9 02        		CMP #$02
+000683r 1  F0 36        		BEQ MYMOVE		; is this a reverse direction request?
+000685r 1  38           		SEC				; no new move made
+000686r 1  60           		RTS
+000687r 1               ;
+000687r 1               ;($1686)
+000687r 1               MAZEANY:
+000687r 1  20 rr rr     		JSR SPRITEPREP
+00068Ar 1  A5 FD        		LDA $FD
+00068Cr 1  38           		SEC				; this should point to >ScreenData
+00068Dr 1  E9 07        		SBC #$07		; reset screen hi-byte back into saved maze data
+00068Fr 1  85 FD        		STA $FD
+000691r 1  A6 41        		LDX NEWDIR
+000693r 1  E0 02        		CPX #$02
+000695r 1  B0 0F        		BCS @skip2		; is X (2=left) or (3=up)?
+000697r 1  A5 FC        		LDA $FC			; no
+000699r 1  18           		CLC
+00069Ar 1  7D rr rr     		ADC PEEKAHEAD,X	; look (0=right) or (1=down)
+00069Dr 1  90 02        		BCC @skip1
+00069Fr 1  E6 FD        		INC $FD
+0006A1r 1  85 FC        @skip1:	STA $FC
+0006A3r 1  18           		CLC
+0006A4r 1  90 0C        		BCC @skip4		; go validate
+0006A6r 1  A5 FC        @skip2:	LDA $FC
+0006A8r 1  38           		SEC
+0006A9r 1  FD rr rr     		SBC PEEKAHEAD-2,X
+0006ACr 1  B0 02        		BCS @skip3		; look (2=left) or (3=up)
+0006AEr 1  C6 FD        		DEC $FD
+0006B0r 1  85 FC        @skip3:	STA $FC
+0006B2r 1  A0 00        @skip4:	LDY #$00		; validate
+0006B4r 1  B1 FC        		LDA ($FC),Y
+0006B6r 1  C9 31        		CMP #$31		; is this direction into a maze wall?
+0006B8r 1  90 01        		BCC MYMOVE		; good move?
+0006BAr 1  60           		RTS
+0006BBr 1               ;
+0006BBr 1               ; continue this sprite's move in whatever is loaded in NEWDIR
+0006BBr 1               ;($16BA)
+0006BBr 1               MYMOVE:
+0006BBr 1  A5 41        		LDA NEWDIR
+0006BDr 1  0A           		ASL				; 0=0, 1=2, 2=4, 3=6
+0006BEr 1  AA           		TAX
+0006BFr 1  A4 01        		LDY $01
+0006C1r 1  BD rr rr     		LDA INERTIA,X
+0006C4r 1  18           		CLC
+0006C5r 1  79 A2 02     		ADC SPRITEX,Y
+0006C8r 1  99 A2 02     		STA SPRITEX,Y
+0006CBr 1  BD rr rr     		LDA INERTIA+1,X
+0006CEr 1  18           		CLC
+0006CFr 1  79 A3 02     		ADC SPRITEY,Y
+0006D2r 1  99 A3 02     		STA SPRITEY,Y
+0006D5r 1  18           		CLC
+0006D6r 1  60           		RTS
+0006D7r 1               ;
+0006D7r 1               ;($16D6)
+0006D7r 1  01 15        PEEKAHEAD:	.byte	$01, $15
+0006D9r 1  01 00 00 01  INERTIA:	.byte	$01, $00, $00, $01, $FF, $00, $00, $FF
+0006DDr 1  FF 00 00 FF  
+0006E1r 1  01 03 05 07  FRUITSCORE:	.byte	$01, $03, $05, $07, $0A, $14, $1E, $32
+0006E5r 1  0A 14 1E 32  
+0006E9r 1  00 00 00 00  			.byte	$00, $00, $00, $00, $00, $00, $00, $00
+0006EDr 1  00 00 00 00  
+0006F1r 1               ;($16F0)
+0006F1r 1  00 30 70 F0  CAGEDATA:	.byte	$00, $30, $70, $F0
+0006F5r 1  02 03 02 00  			.byte	$02, $03, $02, $00, $A0, $18, $A0, $18, $A0, $18, $A0, $18
+0006F9r 1  A0 18 A0 18  
+0006FDr 1  A0 18 A0 18  
+000701r 1               ;
+000701r 1               ; Maze data ($1700 - $18FF)
+000701r 1               ; Screen size: 24-rows by 21-columns
+000701r 1               ScreenData:
+000701r 1               SCORE	= $1706
+000701r 1  93 83 8F 92  		.byte	$93, $83, $8F, $92, $85, $BA, $B0, $B0, $B0, $B0, $B0, $B0, $A0, $A0, $A0, $B0, $B2, $B0, $B0, $B0, $B0
+000705r 1  85 BA B0 B0  
+000709r 1  B0 B0 B0 B0  
+000716r 1  37 3A 3A 3A  		.byte	$37, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3D, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $38
+00071Ar 1  3A 3A 3A 3A  
+00071Er 1  3A 3A 3D 3A  
+00072Br 1  39 1E 1E 1E  		.byte	$39, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $39, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $39
+00072Fr 1  1E 1E 1E 1E  
+000733r 1  1E 1E 39 1E  
+000740r 1  39 1E 37 38  		.byte	$39, $1E, $37, $38, $1E, $37, $3A, $3A, $38, $1E, $39, $1E, $37, $3A, $3A, $38, $1E, $37, $38, $1E, $39
+000744r 1  1E 37 3A 3A  
+000748r 1  38 1E 39 1E  
+000755r 1  39 1F 35 36  		.byte	$39, $1F, $35, $36, $1E, $35, $3A, $3A, $36, $1E, $32, $1E, $35, $3A, $3A, $36, $1E, $35, $36, $1F, $39
+000759r 1  1E 35 3A 3A  
+00075Dr 1  36 1E 32 1E  
+00076Ar 1  39 1E 1E 1E  		.byte	$39, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $39
+00076Er 1  1E 1E 1E 1E  
+000772r 1  1E 1E 1E 1E  
+00077Fr 1  39 1E 37 38  		.byte	$39, $1E, $37, $38, $1E, $31, $1E, $33, $3A, $3A, $3D, $3A, $3A, $34, $1E, $31, $1E, $37, $38, $1E, $39
+000783r 1  1E 31 1E 33  
+000787r 1  3A 3A 3D 3A  
+000794r 1  39 1E 39 39  		.byte	$39, $1E, $39, $39, $1E, $39, $1E, $1E, $1E, $1E, $39, $1E, $1E, $1E, $1E, $39, $1E, $39, $39, $1E, $39
+000798r 1  1E 39 1E 1E  
+00079Cr 1  1E 1E 39 1E  
+0007A9r 1  39 1E 35 36  		.byte	$39, $1E, $35, $36, $1E, $3B, $3A, $3A, $34, $20, $32, $20, $33, $3A, $3A, $3C, $1E, $35, $36, $1E, $39
+0007ADr 1  1E 3B 3A 3A  
+0007B1r 1  34 20 32 20  
+0007BEr 1  39 1E 1E 1E  		.byte	$39, $1E, $1E, $1E, $1E, $39, $20, $20, $20, $20, $20, $20, $20, $20, $20, $39, $1E, $1E, $1E, $1E, $39
+0007C2r 1  1E 39 20 20  
+0007C6r 1  20 20 20 20  
+0007D3r 1  35 3A 3A 38  		.byte	$35, $3A, $3A, $38, $1E, $39, $20, $37, $3A, $3A, $C5, $3A, $3A, $38, $20, $39, $1E, $37, $3A, $3A, $36
+0007D7r 1  1E 39 20 37  
+0007DBr 1  3A 3A C5 3A  
+0007E8r 1  3A 3A 3A 36  		.byte	$3A, $3A, $3A, $36, $1E, $32, $20, $39, $20, $20, $20, $20, $20, $39, $20, $32, $1E, $35, $3A, $3A, $3A
+0007ECr 1  1E 32 20 39  
+0007F0r 1  20 20 20 20  
+0007FDr 1  20 20 20 20  		.byte	$20, $20, $20, $20, $1E, $20, $20, $35, $3A, $3A, $3A, $3A, $3A, $36, $20, $20, $1E, $20, $20, $20, $20
+000801r 1  1E 20 20 35  
+000805r 1  3A 3A 3A 3A  
+000812r 1  3A 3A 3A 38  		.byte	$3A, $3A, $3A, $38, $1E, $31, $20, $20, $20, $20, $20, $20, $20, $20, $20, $31, $1E, $37, $3A, $3A, $3A
+000816r 1  1E 31 20 20  
+00081Ar 1  20 20 20 20  
+000827r 1  37 3A 3A 36  		.byte	$37, $3A, $3A, $36, $1E, $32, $20, $33, $3A, $3A, $3D, $3A, $3A, $34, $20, $32, $1E, $35, $3A, $3A, $38
+00082Br 1  1E 32 20 33  
+00082Fr 1  3A 3A 3D 3A  
+00083Cr 1  39 1E 1E 1E  		.byte	$39, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $39, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $39
+000840r 1  1E 1E 1E 1E  
+000844r 1  1E 1E 39 1E  
+000851r 1  39 1E 33 38  		.byte	$39, $1E, $33, $38, $1E, $33, $3A, $3A, $34, $1E, $32, $1E, $33, $3A, $3A, $34, $1E, $37, $34, $1E, $39
+000855r 1  1E 33 3A 3A  
+000859r 1  34 1E 32 1E  
+000866r 1  39 1F 1E 39  		.byte	$39, $1F, $1E, $39, $1E, $1E, $1E, $1E, $1E, $1E, $20, $1E, $1E, $1E, $1E, $1E, $1E, $39, $1E, $1F, $39
+00086Ar 1  1E 1E 1E 1E  
+00086Er 1  1E 1E 20 1E  
+00087Br 1  3B 34 1E 32  		.byte	$3B, $34, $1E, $32, $1E, $31, $1E, $33, $3A, $3A, $3D, $3A, $3A, $34, $1E, $31, $1E, $32, $1E, $33, $3C
+00087Fr 1  1E 31 1E 33  
+000883r 1  3A 3A 3D 3A  
+000890r 1  39 1E 1E 1E  		.byte	$39, $1E, $1E, $1E, $1E, $39, $1E, $1E, $1E, $1E, $39, $1E, $1E, $1E, $1E, $39, $1E, $1E, $1E, $1E, $39
+000894r 1  1E 39 1E 1E  
+000898r 1  1E 1E 39 1E  
+0008A5r 1  39 1E 33 3A  		.byte	$39, $1E, $33, $3A, $3A, $3E, $3A, $3A, $34, $1E, $32, $1E, $33, $3A, $3A, $3E, $3A, $3A, $34, $1E, $39
+0008A9r 1  3A 3E 3A 3A  
+0008ADr 1  34 1E 32 1E  
+0008BAr 1  39 1E 1E 1E  		.byte	$39, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $1E, $39
+0008BEr 1  1E 1E 1E 1E  
+0008C2r 1  1E 1E 1E 1E  
+0008CFr 1  35 3A 3A 3A  		.byte	$35, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $3A, $36
+0008D3r 1  3A 3A 3A 3A  
+0008D7r 1  3A 3A 3A 3A  
+0008E4r 1  A0 A0 A0 A0  		.byte	$A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0
+0008E8r 1  A0 A0 A0 A0  
+0008ECr 1  A0 A0 A0 A0  
+0008F9r 1               ;
+0008F9r 1               ; sprite colors (0-7)
+0008F9r 1               QUIKMANCLR:
+0008F9r 1  07           		.byte	$07		; yellow
+0008FAr 1               MONSTERCLR:
+0008FAr 1  02 05 03 07  		.byte	$02, $05, $03, $07	; red, green, cyan, yellow
+0008FEr 1  00 00 00     		.byte	$00, $00, $00		; not used
+000901r 1               ;
+000901r 1               ;($1900) recolor maze paint every 8-jiffies ...
+000901r 1               MAZEPAINT:
+000901r 1  A2 00        		LDX #$00
+000903r 1  BD rr rr     @loop:	LDA ScreenData,X
+000906r 1  C9 31        		CMP #$31
+000908r 1  90 09        		BCC @skip1
+00090Ar 1  C9 3F        		CMP #$3F
+00090Cr 1  B0 05        		BCS @skip1
+00090Er 1  A5 45        		LDA MAZE
+000910r 1  9D 00 96     		STA $9600,X
+000913r 1  BD rr rr     @skip1:	LDA ScreenData+$0100,X
+000916r 1  C9 31        		CMP #$31
+000918r 1  90 09        		BCC @skip2
+00091Ar 1  C9 3F        		CMP #$3F
+00091Cr 1  B0 05        		BCS @skip2
+00091Er 1  A5 45        		LDA MAZE
+000920r 1  9D 00 97     		STA $9700,X
+000923r 1  E8           @skip2:	INX
+000924r 1  D0 DD        		BNE @loop
+000926r 1               ;
+000926r 1               ; powerpill flash every 30-jiffies
+000926r 1               EFFECTS:
+000926r 1  A5 46        		LDA FLASHPILL
+000928r 1  C9 1E        		CMP #$1E		; 30-jiffies?
+00092Ar 1  D0 1D        		BNE @skip1
+00092Cr 1  A2 00        		LDX #$00		; reset counter
+00092Er 1  86 46        		STX FLASHPILL
+000930r 1  BD F8 1C     @loop1:	LDA $1CF8,X		; custom graphic char
+000933r 1  5D 88 82     		EOR $8288,X		; rom graphic char
+000936r 1  9D F8 1C     		STA $1CF8,X		; redraw 8x8 char cell
+000939r 1  E8           		INX
+00093Ar 1  E0 08        		CPX #$08
+00093Cr 1  D0 F2        		BNE @loop1
+00093Er 1  A9 FE        		LDA #$FE		; render monster feet
+000940r 1  4D 7F 1D     		EOR $1D7F		; custom graphic char
+000943r 1  8D 7F 1D     		STA $1D7F		; redraw agressive monster
+000946r 1  8D 87 1D     		STA $1D87		; redraw fleeing monster
+000949r 1  E6 46        @skip1:	INC FLASHPILL
+00094Br 1  E6 47        		INC BANNERTIMER
+00094Dr 1  AD 0E 90     		LDA VIC+$0E
+000950r 1  D0 1E        		BNE @skip3		; playing?
+000952r 1  A6 47        		LDX BANNERTIMER	; no, could replace this with JIFFYL
+000954r 1  D0 1A        		BNE @skip3
+000956r 1  A2 00        		LDX #$00
+000958r 1  E6 48        		INC BANNERFLAG
+00095Ar 1  A5 48        		LDA BANNERFLAG
+00095Cr 1  29 01        		AND #$01
+00095Er 1  F0 02        		BEQ @skip2
+000960r 1  A2 12        		LDX #$12
+000962r 1  A0 00        @skip2:	LDY #$00
+000964r 1  BD rr rr     @loop2:	LDA BANNERMSG,X
+000967r 1  99 E5 1F     		STA $1FE5,Y
+00096Ar 1  E8           		INX
+00096Br 1  C8           		INY
+00096Cr 1  C0 12        		CPY #$12
+00096Er 1  D0 F4        		BNE @loop2
+000970r 1  AD 0E 90     @skip3:	LDA VIC+$0E
+000973r 1  F0 1E        		BEQ @top		; playing?
+000975r 1  A2 00        		LDX #$00		; yes
+000977r 1  BD 06 17     @loop3:	LDA SCORE,X		; check current score against high score
+00097Ar 1  DD rr rr     		CMP ScreenData+$0F,X
+00097Dr 1  90 14        		BCC @top		; is quikman beating the high score?
+00097Fr 1  D0 05        		BNE @skip4		; yes!
+000981r 1  E8           		INX
+000982r 1  E0 06        		CPX #$06
+000984r 1  D0 F1        		BNE @loop3
+000986r 1  A2 00        @skip4:	LDX #$00
+000988r 1  BD 06 17     @loop4:	LDA SCORE,X		; woot!
+00098Br 1  9D rr rr     		STA ScreenData+$0F,X
+00098Er 1  E8           		INX
+00098Fr 1  E0 06        		CPX #$06
+000991r 1  D0 F5        		BNE @loop4
+000993r 1  A2 00        @top:	LDX #$00		; refresh top line
+000995r 1  BD rr rr     @loop5:	LDA ScreenData,X
+000998r 1  9D 00 1E     		STA $1E00,X
+00099Br 1  E8           		INX
+00099Cr 1  E0 15        		CPX #$15
+00099Er 1  D0 F5        		BNE @loop5
+0009A0r 1  20 rr rr     		JSR ANIMQMAN	; update area pointed to by SPRITEIMG1&2
+0009A3r 1  20 rr rr     		JSR JOYSTICK
+0009A6r 1  20 rr rr     		JSR ADDSCORE
+0009A9r 1  84 3F        		STY POINTS
+0009ABr 1  4C rr rr     		JMP SR105F
+0009AEr 1               ;
+0009AEr 1               ;($19AD)
+0009AEr 1               DEATH:
+0009AEr 1  78           		SEI			; don't bother with anything else
+0009AFr 1  A9 01        		LDA #$01	; only feature quikman dying
+0009B1r 1  8D A1 02     		STA SPRITE
+0009B4r 1  20 rr rr     		JSR SPRITES	; redraw sprites
+0009B7r 1  A9 50        		LDA #$50	; low-order byte of 1st quikman image
+0009B9r 1  8D BA 02     		STA SPRITEIMG1
+0009BCr 1  A9 20        		LDA #$20
+0009BEr 1  8D A5 03     		STA $03A5	; rotate quikman 8 times
+0009C1r 1  A9 1D        @loop1:	LDA #$1D	; 2nd page where quikman is on
+0009C3r 1  8D C2 02     		STA SPRITEIMG2
+0009C6r 1  AD BA 02     		LDA SPRITEIMG1
+0009C9r 1  C9 70        		CMP #$70	; are we at the 4th quikman image?
+0009CBr 1  90 02        		BCC @skip
+0009CDr 1  A9 50        		LDA #$50	; reset to 1st quikman image
+0009CFr 1  18           @skip:	CLC
+0009D0r 1  69 08        		ADC #$08	; advance to next image
+0009D2r 1  8D BA 02     		STA SPRITEIMG1
+0009D5r 1  20 rr rr     		JSR SPRITES	; redraw sprites
+0009D8r 1  A0 D0        		LDY #$D0
+0009DAr 1  E8           @loop2:	INX
+0009DBr 1  D0 FD        		BNE @loop2	; bad wait loop
+0009DDr 1  C8           		INY
+0009DEr 1  D0 FA        		BNE @loop2
+0009E0r 1  CE A5 03     		DEC $03A5
+0009E3r 1  D0 DC        		BNE @loop1	; repeat next sequence
+0009E5r 1  58           		CLI			; resume dazzling effects
+0009E6r 1  4C rr rr     		JMP RESURRECT
+0009E9r 1               ;
+0009E9r 1               ;($19E8)
+0009E9r 1  00 00 00 00  		.byte	$00, $00, $00, $00
+0009EDr 1               ;
+0009EDr 1               ;($19EC)	my very own sprite routines
+0009EDr 1               ; custom hack for this maze game implementation
+0009EDr 1               SPRITES:
+0009EDr 1  A9 00        		LDA #$00		; start with sprite #0
+0009EFr 1  8D CB 02     		STA $02CB
+0009F2r 1  85 00        		STA $00			; current sprite # to render
+0009F4r 1               sprloop:
+0009F4r 1  0A           		ASL
+0009F5r 1  85 01        		STA $01			; current sprite (x2) pairing index
+0009F7r 1  0A           		ASL
+0009F8r 1  0A           		ASL
+0009F9r 1  85 02        		STA $02			; current sprite (x8) image index
+0009FBr 1  A6 00        		LDX $00
+0009FDr 1  AD A1 02     		LDA SPRITE
+000A00r 1  3D rr rr     		AND SPRITEMASK,X
+000A03r 1  F0 0E        		BEQ @skip2		; nothing to do?
+000A05r 1  AD CC 02     		LDA SPRITELAST	; what state was this sprite before?
+000A08r 1  3D rr rr     		AND SPRITEMASK,X
+000A0Br 1  F0 03        		BEQ @skip1		; it was "off"
+000A0Dr 1  4C rr rr     		JMP ANIMSPRITE	; was "on" before, and we still want it "on"
+000A10r 1  4C rr rr     @skip1:	JMP ANIMSPRNOW	; skip the erase, go turn it "on"
+000A13r 1  AD CC 02     @skip2:	LDA SPRITELAST
+000A16r 1  3D rr rr     		AND SPRITEMASK,X
+000A19r 1  F0 03        		BEQ NEXTSPRITE	; still nothing to do?  Then do nothing ...
+000A1Br 1  20 rr rr     		JSR ERASESPRITE	; make this sprite disappear
+000A1Er 1               NEXTSPRITE:
+000A1Er 1  E6 00        		INC $00
+000A20r 1  A5 00        		LDA $00
+000A22r 1  C9 05        		CMP #$05		; only 5-sprites needed in this game
+000A24r 1  D0 CE        		BNE sprloop
+000A26r 1  A2 00        		LDX #$00
+000A28r 1  BD A1 02     @loop2:	LDA SPRITE,X	; save copy of current sprite registers
+000A2Br 1  9D CC 02     		STA SPRITELAST,X
+000A2Er 1  E8           		INX
+000A2Fr 1  E0 11        		CPX #$11		; all 17 values, not including colors
+000A31r 1  D0 F5        		BNE @loop2
+000A33r 1  60           		RTS				; fini
+000A34r 1               ;
+000A34r 1               ;($1A33)	erasure part 1
+000A34r 1               LASTSPRITEPREP:
+000A34r 1  A5 01        		LDA $01			; 0, 2, 4, 6, 8
+000A36r 1  18           		CLC
+000A37r 1  69 CD        		ADC #$CD		; set register = "last"
+000A39r 1  D0 05        		BNE SPRITEPREP2
+000A3Br 1               ;
+000A3Br 1               ; prepares the following registers:
+000A3Br 1               ; $FC/$FD	screen cell pointer for sprite's "home" position
+000A3Br 1               ; $FE/$FF	color cell pointer for same
+000A3Br 1               ;($1A3A)	erasure part 1
+000A3Br 1               SPRITEPREP:
+000A3Br 1  A5 01        		LDA $01			; 0, 2, 4, 6, 8 index
+000A3Dr 1  18           		CLC
+000A3Er 1  69 A2        		ADC #$A2		; set register = "current"
+000A40r 1               SPRITEPREP2:
+000A40r 1  AA           		TAX				; save this coordinate register index
+000A41r 1  BD 00 02     		LDA $0200,X		; get "X" coordinate
+000A44r 1  C9 A0        		CMP #$A0		; is "X" at or beyond last column?
+000A46r 1  90 02        		BCC @skip1
+000A48r 1  E9 A0        		SBC #$A0		; subtract 160-pixels wide
+000A4Ar 1  4A           @skip1:	LSR				; and divide by 8-pixel width
+000A4Br 1  4A           		LSR
+000A4Cr 1  4A           		LSR
+000A4Dr 1  85 FC        		STA $FC			; save column offset from left
+000A4Fr 1  85 FE        		STA $FE			; save column offset from left
+000A51r 1  AD 88 02     		LDA SCRNPAGE	; get high order byte of screen memory page
+000A54r 1  85 FD        		STA $FD
+000A56r 1  A5 F4        		LDA $F4			; get high order byte of screen color page
+000A58r 1  29 FE        		AND #$FE		; make it and "even" number
+000A5Ar 1  85 FF        		STA $FF			; save high order
+000A5Cr 1  BD 01 02     		LDA $0201,X		; get "Y" coordinate
+000A5Fr 1  C9 B8        		CMP #$B8		; is "Y" at or beyond last row?
+000A61r 1  90 02        		BCC @skip2
+000A63r 1  E9 B8        		SBC #$B8		; subtract 184-pixels high
+000A65r 1  4A           @skip2:	LSR				; and divide by 8-pixel height
+000A66r 1  4A           		LSR
+000A67r 1  4A           		LSR
+000A68r 1  A8           		TAY
+000A69r 1  F0 12        		BEQ @fini		; if on top row, no math required
+000A6Br 1  A5 FC        @loop1:	LDA $FC			; get column offset
+000A6Dr 1  18           		CLC
+000A6Er 1  69 15        		ADC #$15		; add 21 for next row
+000A70r 1  90 04        		BCC @skip3		; overflow to next page?
+000A72r 1  E6 FD        		INC $FD			; yes, increment high order bytes
+000A74r 1  E6 FF        		INC $FF
+000A76r 1  85 FC        @skip3:	STA $FC			; save column offset
+000A78r 1  85 FE        		STA $FE
+000A7Ar 1  88           		DEY
+000A7Br 1  D0 EE        		BNE @loop1		; do for each "row"
+000A7Dr 1  60           @fini:	RTS
+000A7Er 1               ;
+000A7Er 1               ;prepares saveback buffers for restoring, should a larger-numbered sprite be
+000A7Er 1               ;overlapping any part of a smaller-numbered sprite
+000A7Er 1               ;($1A7D)	erasure part 2
+000A7Er 1               PREPMATRIX:
+000A7Er 1  A0 00        		LDY #$00		; top-left sprite cell
+000A80r 1  84 FB        		STY $FB
+000A82r 1  A5 01        		LDA $01			; 0, 2, 4, 6, 8 index
+000A84r 1  0A           		ASL				; x2
+000A85r 1  AA           		TAX
+000A86r 1  85 03        		STA $03			; save my custom char #
+000A88r 1  A9 01        @loop1:	LDA #$01		; "white" color
+000A8Ar 1  9D 3C 03     		STA CASSBUFF,X	; 2x2 cell saveback buffer
+000A8Dr 1  B1 FC        		LDA ($FC),Y		; retrieve screen cell
+000A8Fr 1  C5 03        @retry:	CMP $03
+000A91r 1  90 1A        		BCC @skip1		; is A < $03 ?
+000A93r 1  C9 1E        		CMP #$1E
+000A95r 1  B0 16        		BCS @skip1		; is A >= $1E ?
+000A97r 1               ;there is a sprite # greater than us on top ...
+000A97r 1  86 04        		STX $04			; save X index
+000A99r 1  48           		PHA				; push A to stack
+000A9Ar 1  AA           		TAX
+000A9Br 1  BD 3C 03     		LDA CASSBUFF,X	;
+000A9Er 1  A6 04        		LDX $04
+000AA0r 1  9D 3C 03     		STA CASSBUFF,X
+000AA3r 1  68           		PLA				; pop A from stack
+000AA4r 1  AA           		TAX
+000AA5r 1  BD DD 02     		LDA SAVEBACK,X
+000AA8r 1  A6 04        		LDX $04
+000AAAr 1  18           		CLC
+000AABr 1  90 E2        		BCC @retry
+000AADr 1  9D DD 02     @skip1:	STA SAVEBACK,X
+000AB0r 1  E8           		INX
+000AB1r 1  98           		TYA
+000AB2r 1  A4 FB        		LDY $FB
+000AB4r 1  18           		CLC
+000AB5r 1  79 rr rr     		ADC CHARMATRIX,Y
+000AB8r 1  A8           		TAY
+000AB9r 1  E6 FB        		INC $FB
+000ABBr 1  A5 FB        		LDA $FB
+000ABDr 1  C9 03        		CMP #$03		; truncated from 4 to 3-cells
+000ABFr 1  D0 C7        		BNE @loop1
+000AC1r 1  60           		RTS
+000AC2r 1               ;
+000AC2r 1               ;puts the sprite character matrix on the screen
+000AC2r 1               ;($1AC1)
+000AC2r 1               PLACEMATRIX:
+000AC2r 1  A0 00        		LDY #$00
+000AC4r 1  84 FB        		STY $FB
+000AC6r 1  A6 00        		LDX $00
+000AC8r 1  A5 01        		LDA $01
+000ACAr 1  0A           		ASL
+000ACBr 1  48           		PHA
+000ACCr 1  68           @loop1:	PLA
+000ACDr 1  91 FC        		STA ($FC),Y
+000ACFr 1  18           		CLC
+000AD0r 1  69 01        		ADC #$01
+000AD2r 1  48           		PHA
+000AD3r 1  BD B2 02     		LDA SPRITECLR,X
+000AD6r 1  91 FE        		STA ($FE),Y
+000AD8r 1  98           		TYA
+000AD9r 1  A4 FB        		LDY $FB
+000ADBr 1  18           		CLC
+000ADCr 1  79 rr rr     		ADC CHARMATRIX,Y
+000ADFr 1  A8           		TAY
+000AE0r 1  E6 FB        		INC $FB
+000AE2r 1  A5 FB        		LDA $FB
+000AE4r 1  C9 03        		CMP #$03		; truncated from 4 to 3-cells
+000AE6r 1  D0 E4        		BNE @loop1
+000AE8r 1  68           		PLA
+000AE9r 1  60           		RTS
+000AEAr 1               ;
+000AEAr 1               ;restores the sprite's saveback buffer to the screen squares it occupies
+000AEAr 1               ;($1AE9)	erasure part 3
+000AEAr 1               RESTOREMATRIX:
+000AEAr 1  A0 00        		LDY #$00
+000AECr 1  84 FB        		STY $FB
+000AEEr 1  A5 01        		LDA $01
+000AF0r 1  0A           		ASL				; x2
+000AF1r 1  AA           		TAX
+000AF2r 1  BD DD 02     @loop1:	LDA SAVEBACK,X	; recover character
+000AF5r 1  91 FC        		STA ($FC),Y		; restore to screen
+000AF7r 1  A9 01        		LDA #$01
+000AF9r 1  EA           		NOP
+000AFAr 1  91 FE        		STA ($FE),Y		; and leave "white" behind
+000AFCr 1  E8           		INX
+000AFDr 1  98           		TYA
+000AFEr 1  A4 FB        		LDY $FB
+000B00r 1  18           		CLC
+000B01r 1  79 rr rr     		ADC CHARMATRIX,Y
+000B04r 1  A8           		TAY
+000B05r 1  E6 FB        		INC $FB
+000B07r 1  A5 FB        		LDA $FB
+000B09r 1  C9 03        		CMP #$03		; truncated from 4 to 3-cells
+000B0Br 1  D0 E5        		BNE @loop1
+000B0Dr 1  60           		RTS
+000B0Er 1               ;
+000B0Er 1               ;render sprite within its character matrix by merging its image over its saveback
+000B0Er 1               ;($1B0D)
+000B0Er 1               RENDER:
+000B0Er 1  A6 00        		LDX $00
+000B10r 1  BD BA 02     		LDA SPRITEIMG1,X
+000B13r 1  85 05        		STA $05
+000B15r 1  BD C2 02     		LDA SPRITEIMG2,X
+000B18r 1  85 06        		STA $06
+000B1Ar 1  A6 01        		LDX $01
+000B1Cr 1  BD A3 02     		LDA SPRITEY,X
+000B1Fr 1  29 07        		AND #$07
+000B21r 1  85 03        		STA $03
+000B23r 1  AA           		TAX				; X will hold the sprite's Y coord
+000B24r 1  A0 00        		LDY #$00		; erase temp image matrix area
+000B26r 1  98           		TYA
+000B27r 1  99 5C 03     @loop1:	STA CASSBUFF+$20,Y
+000B2Ar 1  C8           		INY
+000B2Br 1  C0 18        		CPY #$18		; customized from 4 to 3 character cells
+000B2Dr 1  D0 F8        		BNE @loop1
+000B2Fr 1  A8           		TAY				; copy 8x8 character image into temp matrix
+000B30r 1  B1 05        @loop2:	LDA ($05),Y		; $05/$06 points to character matrix
+000B32r 1  9D 5C 03     		STA CASSBUFF+$20,X
+000B35r 1  E8           		INX
+000B36r 1  C8           		INY
+000B37r 1  C0 08        		CPY #$08
+000B39r 1  D0 F5        		BNE @loop2
+000B3Br 1  A6 01        		LDX $01
+000B3Dr 1  BD A2 02     		LDA SPRITEX,X
+000B40r 1  29 07        		AND #$07		; get modulos on X coordinate
+000B42r 1  A8           		TAY
+000B43r 1  F0 16        		BEQ @skip1		; if its zero, no shifting required
+000B45r 1  A9 00        @loop3:	LDA #$00
+000B47r 1  A6 03        		LDX $03
+000B49r 1  18           @loop4:	CLC
+000B4Ar 1  7E 5C 03     		ROR CASSBUFF+$20,X
+000B4Dr 1  7E 6C 03     		ROR CASSBUFF+$30,X
+000B50r 1  E8           		INX
+000B51r 1  18           		CLC
+000B52r 1  69 01        		ADC #$01
+000B54r 1  C9 08        		CMP #$08
+000B56r 1  D0 F1        		BNE @loop4
+000B58r 1  88           		DEY
+000B59r 1  D0 EA        		BNE @loop3
+000B5Br 1  84 FB        @skip1:	STY $FB			; Y is always zero here
+000B5Dr 1  A5 01        @loop5:	LDA $01			; index x2
+000B5Fr 1  0A           		ASL				; and x2 = x4
+000B60r 1  18           		CLC
+000B61r 1  65 FB        		ADC $FB
+000B63r 1  AA           		TAX
+000B64r 1  A9 1C        		LDA #$1C		; 1st page is where sprites are stored
+000B66r 1  85 06        		STA $06
+000B68r 1  BD DD 02     		LDA SAVEBACK,X
+000B6Br 1  C9 80        		CMP #$80		; is character reversed?
+000B6Dr 1  90 04        		BCC @skip2
+000B6Fr 1  A0 80        		LDY #$80		; yes, use start of ROM character set
+000B71r 1  84 06        		STY $06
+000B73r 1  29 1F        @skip2:	AND #$1F		; get modulos of first 32-characters
+000B75r 1  0A           		ASL				; and multiply by 8-pixel height
+000B76r 1  0A           		ASL
+000B77r 1  0A           		ASL
+000B78r 1  85 05        		STA $05			; save as low-order byte index
+000B7Ar 1  BD DD 02     		LDA SAVEBACK,X
+000B7Dr 1  29 60        		AND #$60		; mask 01100000
+000B7Fr 1  4A           		LSR				; divide by 16
+000B80r 1  4A           		LSR
+000B81r 1  4A           		LSR
+000B82r 1  4A           		LSR
+000B83r 1  4A           		LSR
+000B84r 1  18           		CLC
+000B85r 1  65 06        		ADC $06			; add result to high-order page index
+000B87r 1  85 06        		STA $06
+000B89r 1  A0 00        		LDY #$00
+000B8Br 1  A5 FB        		LDA $FB
+000B8Dr 1  0A           		ASL
+000B8Er 1  0A           		ASL
+000B8Fr 1  0A           		ASL
+000B90r 1  AA           		TAX
+000B91r 1  B1 05        @loop6:	LDA ($05),Y		; copy 8x8 character image into behind matrix
+000B93r 1  9D 7C 03     		STA CASSBUFF+$40,X
+000B96r 1  E8           		INX
+000B97r 1  C8           		INY
+000B98r 1  C0 08        		CPY #$08
+000B9Ar 1  D0 F5        		BNE @loop6
+000B9Cr 1  E6 FB        		INC $FB
+000B9Er 1  A5 FB        		LDA $FB
+000BA0r 1  C9 03        		CMP #$03
+000BA2r 1  D0 B9        		BNE @loop5
+000BA4r 1  A0 00        		LDY #$00
+000BA6r 1  84 FB        @loop7:	STY $FB
+000BA8r 1  B9 7C 03     		LDA CASSBUFF+$40,Y
+000BABr 1  59 5C 03     		EOR CASSBUFF+$20,Y
+000BAEr 1  39 5C 03     		AND CASSBUFF+$20,Y
+000BB1r 1  D9 5C 03     		CMP CASSBUFF+$20,Y
+000BB4r 1  F0 0B        		BEQ @skip3
+000BB6r 1  A6 00        		LDX $00
+000BB8r 1  BD rr rr     		LDA SPRITEMASK,X
+000BBBr 1  0D CB 02     		ORA $02CB
+000BBEr 1  8D CB 02     		STA $02CB
+000BC1r 1  A5 02        @skip3:	LDA $02
+000BC3r 1  0A           		ASL
+000BC4r 1  0A           		ASL
+000BC5r 1  18           		CLC
+000BC6r 1  65 FB        		ADC $FB
+000BC8r 1  AA           		TAX
+000BC9r 1  A4 FB        		LDY $FB
+000BCBr 1  B9 5C 03     		LDA	CASSBUFF+$20,Y
+000BCEr 1  19 7C 03     		ORA CASSBUFF+$40,Y
+000BD1r 1  9D 00 1C     		STA $1C00,X
+000BD4r 1  C8           		INY
+000BD5r 1  C0 18        		CPY #$18		; customized from 4 to 3 character cells
+000BD7r 1  D0 CD        		BNE @loop7
+000BD9r 1  60           		RTS
+000BDAr 1               ;
+000BDAr 1               ;($1BD9)
+000BDAr 1               ANIMSPRITE:
+000BDAr 1  20 rr rr     		JSR ERASESPRITE
+000BDDr 1               ANIMSPRNOW:
+000BDDr 1  20 rr rr     		JSR SPRITEPREP
+000BE0r 1  20 rr rr     		JSR PREPMATRIX
+000BE3r 1  20 rr rr     		JSR RENDER
+000BE6r 1  20 rr rr     		JSR PLACEMATRIX
+000BE9r 1  4C rr rr     		JMP NEXTSPRITE
+000BECr 1               ;
+000BECr 1               ;$(1BEB)
+000BECr 1               ERASESPRITE:
+000BECr 1  20 rr rr     		JSR LASTSPRITEPREP
+000BEFr 1  20 rr rr     		JSR PREPMATRIX
+000BF2r 1  20 rr rr     		JSR RESTOREMATRIX
+000BF5r 1  60           		RTS
+000BF6r 1               ;
+000BF6r 1               ;($1BF5 - $1BFF)
+000BF6r 1               CHARMATRIX:
+000BF6r 1  15 EC 15     		.byte	$15, $EC, $15
+000BF9r 1               SPRITEMASK:
+000BF9r 1  01 02 04 08  		.byte	$01, $02, $04, $08, $10, $20, $40, $80
+000BFDr 1  10 20 40 80  
+000C01r 1               ;
+000C01r 1               ; Custom character data ($1C00 - $1DFF)
+000C01r 1               GraphicData:
+000C01r 1  3E 7C F8 F0  		.byte	$3E, $7C, $F8, $F0, $F0, $F8, $7C, $3E
+000C05r 1  F0 F8 7C 3E  
+000C09r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $81, $42
+000C0Dr 1  00 00 81 42  
+000C11r 1  00 00 00 18  		.byte	$00, $00, $00, $18, $18, $00, $00, $00
+000C15r 1  18 00 00 00  
+000C19r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $FF, $00
+000C1Dr 1  00 00 FF 00  
+000C21r 1  38 7C FE 92  		.byte	$38, $7C, $FE, $92, $FE, $FE, $FE, $AA
+000C25r 1  FE FE FE AA  
+000C29r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $00, $00
+000C2Dr 1  00 00 00 00  
+000C31r 1  00 00 00 00  		.byte	$00, $00, $00, $00, $00, $00, $00, $00
+000C35r 1  00 00 00 00  
+000C39r 1  00 FC 02 01  		.byte	$00, $FC, $02, $01, $01, $02, $FC, $00
+000C3Dr 1  01 02 FC 00  
+000C41r 1  38 7C FE 92  		.byte	$38, $7C, $FE, $92, $FE, $FE, $FE, $AA
+000C45r 1  FE FE FE AA  
+000C49r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $FF, $00
+000C4Dr 1  00 00 FF 00  
+000C51r 1  00 00 00 00  		.byte	$00, $00, $00, $00, $00, $00, $00, $00
+000C55r 1  00 00 00 00  
+000C59r 1  18 24 42 42  		.byte	$18, $24, $42, $42, $42, $42, $42, $42
+000C5Dr 1  42 42 42 42  
+000C61r 1  38 7C FE 92  		.byte	$38, $7C, $FE, $92, $FE, $FE, $FE, $AA
+000C65r 1  FE FE FE AA  
+000C69r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $FF, $00
+000C6Dr 1  00 00 FF 00  
+000C71r 1  42 42 42 42  		.byte	$42, $42, $42, $42, $42, $42, $42, $42
+000C75r 1  42 42 42 42  
+000C79r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $FF, $00
+000C7Dr 1  00 00 FF 00  
+000C81r 1  38 7C FE 92  		.byte	$38, $7C, $FE, $92, $FE, $FE, $FE, $AA
+000C85r 1  FE FE FE AA  
+000C89r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $FF, $00
+000C8Dr 1  00 00 FF 00  
+000C91r 1  00 00 00 00  		.byte	$00, $00, $00, $00, $00, $00, $00, $00
+000C95r 1  00 00 00 00  
+000C99r 1  42 42 42 42  		.byte	$42, $42, $42, $42, $42, $42, $24, $18
+000C9Dr 1  42 42 24 18  
+000CA1r 1               ;
+000CA1r 1               ;($1CA0)
+000CA1r 1               GAMEOVER:
+000CA1r 1  AD 0E 90     		LDA VIC+$0E		; no sound?
+000CA4r 1  F0 01        		BEQ @skip1
+000CA6r 1  60           		RTS				; yes, must be playing game
+000CA7r 1  A0 00        @skip1:	LDY #$00		; no, paint for banners
+000CA9r 1  A9 03        		LDA #$03		; use cyan
+000CABr 1  99 E3 97     @loop1:	STA $97E3,Y		; color RAM
+000CAEr 1  C8           		INY
+000CAFr 1  C0 15        		CPY #$15		; do the whole row
+000CB1r 1  D0 F8        		BNE @loop1
+000CB3r 1  A9 20        		LDA #$20		; use a space
+000CB5r 1  8D E3 1F     		STA $1FE3
+000CB8r 1  8D F7 1F     		STA $1FF7
+000CBBr 1  A6 49        		LDX FRUITLEVEL
+000CBDr 1  E0 0C        		CPX #$0C
+000CBFr 1  90 02        		BCC @skip2
+000CC1r 1  A2 0C        		LDX #$0C
+000CC3r 1  BD rr rr     @skip2:	LDA FRUIT,X
+000CC6r 1  8D 1B 1F     		STA FRUITCELL	; display final level achieved
+000CC9r 1  BD rr rr     		LDA FRUITCLR,X
+000CCCr 1  8D 1B 97     		STA FRUITCELLCLR
+000CCFr 1  60           		RTS
+000CD0r 1               ;
+000CD0r 1               ;($1CCF)
+000CD0r 1               SR1CCF:
+000CD0r 1  A5 3D        		LDA CHEWING		; is quikman eating a dot?
+000CD2r 1  58           		CLI
+000CD3r 1  D0 04        		BNE @skip1
+000CD5r 1  20 rr rr     		JSR SPRITES
+000CD8r 1  60           		RTS
+000CD9r 1  20 rr rr     @skip1:	JSR SPRITES
+000CDCr 1  68           		PLA
+000CDDr 1  68           		PLA
+000CDEr 1  4C rr rr     		JMP QUIKMAN
+000CE1r 1               ;
+000CE1r 1               ; resume graphic character data
+000CE1r 1               ;($1CE0)
+000CE1r 1  00 00 00 00  		.byte	$00, $00, $00, $00, $00, $00, $00, $00	;
+000CE5r 1  00 00 00 00  
+000CE9r 1  3C 7E FF FF  		.byte	$3C, $7E, $FF, $FF, $FF, $FF, $7E, $3C	; ] pacman animated
+000CEDr 1  FF FF 7E 3C  
+000CF1r 1  00 00 00 18  		.byte	$00, $00, $00, $18, $18, $00, $00, $00	; ^ dot
+000CF5r 1  18 00 00 00  
+000CF9r 1  00 3C 7E 7E  		.byte	$00, $3C, $7E, $7E, $7E, $7E, $3C, $00	; <- powerpill animated
+000CFDr 1  7E 7E 3C 00  
+000D01r 1  00 00 00 00  		.byte	$00, $00, $00, $00, $00, $00, $00, $00	;   empty space
+000D05r 1  00 00 00 00  
+000D09r 1  92 54 28 C6  		.byte	$92, $54, $28, $C6, $28, $54, $92, $00	; ! explosion
+000D0Dr 1  28 54 92 00  
+000D11r 1  04 08 18 24  		.byte	$04, $08, $18, $24, $62, $F7, $F2, $60	; " cherry
+000D15r 1  62 F7 F2 60  
+000D19r 1  10 7C FE AA  		.byte	$10, $7C, $FE, $AA, $D6, $AA, $54, $28	; # strawberry
+000D1Dr 1  D6 AA 54 28  
+000D21r 1  20 10 7C FE  		.byte	$20, $10, $7C, $FE, $FE, $FE, $7C, $38	; $ peach
+000D25r 1  FE FE 7C 38  
+000D29r 1  08 10 7C FE  		.byte	$08, $10, $7C, $FE, $FE, $FE, $7C, $28	; % apple
+000D2Dr 1  FE FE 7C 28  
+000D31r 1  08 10 38 38  		.byte	$08, $10, $38, $38, $7C, $FE, $FE, $6C	; & pear
+000D35r 1  7C FE FE 6C  
+000D39r 1  10 30 92 FE  		.byte	$10, $30, $92, $FE, $7C, $38, $10, $28	; ' tbird
+000D3Dr 1  7C 38 10 28  
+000D41r 1  10 38 7C 7C  		.byte	$10, $38, $7C, $7C, $7C, $7C, $FE, $10	; ( bell
+000D45r 1  7C 7C FE 10  
+000D49r 1  18 24 18 08  		.byte	$18, $24, $18, $08, $08, $18, $08, $18	; ) key
+000D4Dr 1  08 18 08 18  
+000D51r 1  3C 7E FF FF  		.byte	$3C, $7E, $FF, $FF, $FF, $FF, $7E, $3C	; * pacman closed
+000D55r 1  FF FF 7E 3C  
+000D59r 1  3E 7C F8 F0  		.byte	$3E, $7C, $F8, $F0, $F0, $F8, $7C, $3E	; + pacman right
+000D5Dr 1  F0 F8 7C 3E  
+000D61r 1  3C 7E FF FF  		.byte	$3C, $7E, $FF, $FF, $E7, $C3, $81, $00 ; , pacman down
+000D65r 1  E7 C3 81 00  
+000D69r 1  7C 3E 1F 0F  		.byte	$7C, $3E, $1F, $0F, $0F, $1F, $3E, $7C	; - pacman left
+000D6Dr 1  0F 1F 3E 7C  
+000D71r 1  00 81 C3 E7  		.byte	$00, $81, $C3, $E7, $FF, $FF, $7E, $3C	; . pacman up
+000D75r 1  FF FF 7E 3C  
+000D79r 1  38 7C FE 92  		.byte	$38, $7C, $FE, $92, $FE, $FE, $FE, $AA	; / ghost chasing
+000D7Dr 1  FE FE FE AA  
+000D81r 1  38 7C FE 92  		.byte	$38, $7C, $FE, $92, $FE, $82, $FE, $AA	; 0 ghost fleeing
+000D85r 1  FE 82 FE AA  
+000D89r 1  18 24 42 42  		.byte	$18, $24, $42, $42, $42, $42, $42, $42	; 1 maze wall north
+000D8Dr 1  42 42 42 42  
+000D91r 1  42 42 42 42  		.byte	$42, $42, $42, $42, $42, $42, $24, $18	; 2 maze wall south
+000D95r 1  42 42 24 18  
+000D99r 1  00 3F 40 80  		.byte	$00, $3F, $40, $80, $80, $40, $3F, $00	; 3 maze wall west
+000D9Dr 1  80 40 3F 00  
+000DA1r 1  00 FC 02 01  		.byte	$00, $FC, $02, $01, $01, $02, $FC, $00	; 4 maze wall east
+000DA5r 1  01 02 FC 00  
+000DA9r 1  42 41 40 40  		.byte	$42, $41, $40, $40, $40, $20, $1F, $00	; 5 maze wall s-w elbow
+000DADr 1  40 20 1F 00  
+000DB1r 1  42 82 02 02  		.byte	$42, $82, $02, $02, $02, $04, $F8, $00	; 6 maze wall s-e elbow
+000DB5r 1  02 04 F8 00  
+000DB9r 1  00 1F 20 40  		.byte	$00, $1F, $20, $40, $40, $40, $41, $42	; 7 maze wall n-w elbow
+000DBDr 1  40 40 41 42  
+000DC1r 1  00 F8 04 02  		.byte	$00, $F8, $04, $02, $02, $02, $82, $42	; 8 maze wall n-e elbow
+000DC5r 1  02 02 82 42  
+000DC9r 1  42 42 42 42  		.byte	$42, $42, $42, $42, $42, $42, $42, $42	; 9 maze wall vertical
+000DCDr 1  42 42 42 42  
+000DD1r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $FF, $00	; : maze wall horizontal
+000DD5r 1  00 00 FF 00  
+000DD9r 1  42 41 40 40  		.byte	$42, $41, $40, $40, $40, $40, $41, $42	; ; maze wall west tee
+000DDDr 1  40 40 41 42  
+000DE1r 1  42 82 02 02  		.byte	$42, $82, $02, $02, $02, $02, $82, $42	; < maze wall east tee
+000DE5r 1  02 02 82 42  
+000DE9r 1  00 FF 00 00  		.byte	$00, $FF, $00, $00, $00, $00, $81, $42	; = maze wall north tee
+000DEDr 1  00 00 81 42  
+000DF1r 1  42 81 00 00  		.byte	$42, $81, $00, $00, $00, $00, $FF, $00	; > maze wall south tee
+000DF5r 1  00 00 FF 00  
+000DF9r 1  3C 42 99 A1  		.byte	$3C, $42, $99, $A1, $A1, $99, $42, $3C	; ? copyright symbol
+000DFDr 1  A1 99 42 3C  
+000E00r 1               
